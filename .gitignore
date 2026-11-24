@@ -11,5 +11,4 @@ build/
 # Generated smoke test artifacts
 outputs/
 runs.jsonl
-projects/*/outputs/
-projects/*/runs.jsonl
+projects/

@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vid-forge.local/schema/storyboard.schema.json",
+  "title": "vid-forge storyboard",
+  "description": "The contract between every vid-forge pipeline stage. Human-authored: derived data (measured audio length, hashes, timings) lives under outputs/, never in this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "meta", "style", "narration", "shots", "music", "end_card"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "meta": { "$ref": "#/$defs/meta" },
+    "style": { "$ref": "#/$defs/style" },
+    "narration": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 40,
+      "items": { "$ref": "#/$defs/narrationLine" }
+    },
+    "shots": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 24,
+      "items": { "$ref": "#/$defs/shot" }
+    },
+    "music": { "$ref": "#/$defs/music" },
+    "end_card": { "$ref": "#/$defs/endCard" }
+  },
+  "$defs": {
+    "shotId": { "type": "string", "pattern": "^shot_[0-9]{2,3}$" },
+    "lineId": { "type": "string", "pattern": "^line_[0-9]{2,3}$" },
+    "cueId": { "type": "string", "pattern": "^cue_[0-9]{2,3}$" },
+    "characterId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,31}$" },
+    "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "audience",
+        "intent",
+        "narration_language",
+        "subtitle_language",
+        "fps",
+        "aspect_ratios"
+      ],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "audience": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 300,
+          "description": "One specific group of people, not 'everyone'."
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 400,
+          "description": "After watching, the audience should feel / understand / do ..."
+        },
+        "narration_language": {
+          "type": "string",
+          "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$",
+          "description": "BCP-47 code, e.g. 'am' or 'en'."
+        },
+        "subtitle_language": { "const": "en" },
+        "voice_style": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200,
+          "description": "Style instruction for the TTS model, e.g. 'calm, warm, unhurried'."
+        },
+        "fps": { "enum": [24, 25, 30] },
+        "aspect_ratios": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["16:9", "9:16"] },
+          "description": "Both exports are required."
+        },
+        "generation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "generated_at", "brief_sha256"],
+          "description": "Filled in by `vid-forge storyboard`. Lets later stages notice that the brief changed.",
+          "properties": {
+            "model": { "type": "string", "minLength": 1 },
+            "generated_at": { "type": "string", "format": "date-time" },
+            "brief_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        }
+      }
+    },
+
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prefix", "characters"],
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 300,
+          "description": "Prepended to every keyframe prompt."
+        },
+        "negative": { "type": "string", "maxLength": 300 },
+        "palette": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+        },
+        "characters": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/characterId" },
+          "additionalProperties": { "type": "string", "minLength": 10, "maxLength": 300 },
+          "description": "Character id -> description pasted verbatim into prompts of shots that list it."
+        }
+      }
+    },
+
+    "narrationLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text_en", "text"],
+      "properties": {
+        "id": { "$ref": "#/$defs/lineId" },
+        "text_en": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "English source of truth. Subtitles come from this field."
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400,
+          "description": "Line in meta.narration_language. Identical to text_en when that language is English."
+        }
+      }
+    },
+
+    "shot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "purpose",
+        "duration_s",
+        "narration_ref",
+        "characters",
+        "keyframe",
+        "motion",
+        "crop_x"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/shotId" },
+        "purpose": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 200,
+          "description": "Why this shot exists, in one sentence."
+        },
+        "duration_s": { "type": "number", "minimum": 2, "maximum": 10 },
+        "framing": { "enum": ["wide", "medium", "close", "detail"] },
+        "narration_ref": {
+          "oneOf": [{ "$ref": "#/$defs/lineId" }, { "type": "null" }],
+          "description": "Narration line spoken over this shot, or null for a silent shot."
+        },
+        "characters": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/characterId" },
+          "description": "Keys of style.characters that appear in this shot."
+        },
+        "keyframe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["prompt", "seed", "candidates", "selected"],
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 20,
+              "maxLength": 600,
+              "description": "Scene only. style.prefix and character descriptions are added by the keyframes stage."
+            },
+            "seed": { "$ref": "#/$defs/seed" },
+            "candidates": { "type": "integer", "minimum": 1, "maximum": 6 },
+            "selected": {
+              "type": ["integer", "null"],
+              "minimum": 1,
+              "description": "1-based candidate chosen by a human; null until chosen."
+            }
+          }
+        },
+        "motion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "enum": ["i2v", "kenburns"] },
+            "prompt": {
+              "type": "string",
+              "minLength": 10,
+              "maxLength": 300,
+              "description": "Movement only; the keyframe already holds the scene."
+            },
+            "seed": { "$ref": "#/$defs/seed" },
+            "camera": { "enum": ["zoom_in", "zoom_out", "pan_left", "pan_right"] }
+          },
+          "allOf": [
+            {
+              "if": { "required": ["type"], "properties": { "type": { "const": "i2v" } } },
+              "then": { "required": ["prompt", "seed"] }
+            },
+            {
+              "if": { "required": ["type"], "properties": { "type": { "const": "kenburns" } } },
+              "then": { "required": ["camera"] }
+            }
+          ]
+        },
+        "crop_x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Horizontal position of the 9:16 crop inside the 16:9 frame (0 = left edge, 1 = right edge)."
+        }
+      }
+    },
+
+    "music": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["instrumental", "bpm", "cues"],
+      "properties": {
+        "instrumental": { "type": "boolean" },
+        "bpm": { "type": "integer", "minimum": 40, "maximum": 200 },
+        "cues": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/musicCue" }
+        }
+      }
+    },
+
+    "musicCue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "start_s", "end_s", "mood", "intensity", "prompt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/cueId" },
+        "start_s": { "type": "number", "minimum": 0 },
+        "end_s": { "type": "number", "exclusiveMinimum": 0 },
+        "mood": { "type": "string", "minLength": 3, "maxLength": 80 },
+        "intensity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "prompt": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 300,
+          "description": "Text prompt for the music model: genre, instruments, mood, tempo."
+        }
+      }
+    },
+
+    "endCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "duration_s"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 80,
+          "pattern": "\\bAI\\b",
+          "description": "Must state that the film was made with AI."
+        },
+        "credits": { "type": "string", "maxLength": 200 },
+        "duration_s": { "type": "number", "minimum": 2, "maximum": 5 }
+      }
+    }
+  }
+}
