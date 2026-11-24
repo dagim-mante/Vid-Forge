@@ -1,0 +1,10 @@
+[project]
+name = "vid-forge"
+version = "0.1.0"
+description = "Video generation and AI provider orchestration workspace"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai",
+    "requests",
+    "python-dotenv",
+]

@@ -1,0 +1,11 @@
+# env files
+.env
+
+# Python virtual environment and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Generated smoke test artifacts
+outputs/
+runs.jsonl
