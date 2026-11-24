@@ -30,11 +30,12 @@ def main() -> None:
     }
 
     kaggle_working = Path("/kaggle/working")
-    output_path = (
-        kaggle_working / "gpu-smoke-test.json"
-        if kaggle_working.exists()
-        else Path("outputs/smoke/gpu-smoke-test.json")
-    )
+    if kaggle_working.exists():
+        output_path = kaggle_working / "gpu-smoke-test.json"
+    else:
+        resolved = Path(__file__).resolve()
+        root_dir = resolved.parents[2] if len(resolved.parents) > 2 else resolved.parent
+        output_path = root_dir / "outputs" / "smoke" / "gpu-smoke-test.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
