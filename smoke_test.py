@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import time
 from typing import Any, Callable
@@ -146,6 +148,41 @@ def _run_cloudflare(model: str) -> str:
     return output_path.as_posix()
 
 
+def _kaggle_configured() -> bool:
+    return bool(_env_first("KAGGLE_API_TOKEN"))
+
+
+def _kaggle_model() -> str:
+    return "kaggle-cli"
+
+
+def _run_kaggle(_model: str) -> str:
+    # Check both PATH and the active Python environment's Scripts/bin directory.
+    scripts_dir = str(Path(sys.executable).parent)
+    executable = shutil.which("kaggle") or shutil.which("kaggle", path=scripts_dir)
+    if not executable:
+        raise RuntimeError("Kaggle CLI not found. Run: pip install kaggle")
+
+    if not _env_first("KAGGLE_API_TOKEN"):
+        raise RuntimeError("KAGGLE_API_TOKEN is missing from .env")
+
+    result = subprocess.run(
+        [executable, "datasets", "list", "-s", "mnist"],
+        capture_output=True,
+        text=True,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout).strip()[:500]
+        raise RuntimeError(f"Kaggle CLI failed: {details}")
+
+    output_path = OUTPUT_DIR / "kaggle.txt"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(result.stdout, encoding="utf-8")
+    return output_path.as_posix()
+
+
 PROVIDERS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="gemini",
@@ -160,6 +197,13 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         get_model=_cloudflare_model,
         is_configured=_cloudflare_configured,
         run=_run_cloudflare,
+    ),
+    ProviderSpec(
+        name="kaggle",
+        operation="api_authentication",
+        get_model=_kaggle_model,
+        is_configured=_kaggle_configured,
+        run=_run_kaggle,
     ),
 )
 

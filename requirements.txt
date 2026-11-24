@@ -1,3 +1,5 @@
 google-genai
+kaggle
+six
 requests
 python-dotenv

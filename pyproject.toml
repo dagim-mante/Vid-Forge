@@ -5,6 +5,8 @@ description = "Video generation and AI provider orchestration workspace"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai",
+    "kaggle",
+    "six",
     "requests",
     "python-dotenv",
 ]
