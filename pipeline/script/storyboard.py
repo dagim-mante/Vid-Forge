@@ -1,10 +1,10 @@
-"""Storyboard stage: turn projects/<name>/input/brief.md into production/storybook.json.
+"""Storyboard stage: turn projects/<name>/input/brief.md into production/storyboard.json.
 
 Flow:
-    read brief -> ask Gemini for JSON -> fill pipeline-owned fields ->
-    validate against schema/storybook.schema.json -> write production/storybook.json
+    read brief and reference images -> ask Gemini for JSON -> fill pipeline-owned
+    fields -> validate against schema/storybook.schema.json -> write storyboard.json
 
-Nothing is written to production/storybook.json unless validation passes. If the model's
+Nothing is written to production/storyboard.json unless validation passes. If the model's
 output is invalid, the errors are sent back to the model for a repair attempt
 (up to ``max_attempts`` total). Every raw attempt is kept under
 ``outputs/storyboard/`` and every model call is logged to ``runs.jsonl``.
@@ -29,9 +29,9 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 
-from validate_storyboard import ValidationReport, load_schema, validate_storyboard
+from reference_images import ReferenceFile, scan_references
+from validate_storyboard import ROOT_DIR, ValidationReport, load_schema, storyboard_path, validate_storyboard
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT_DIR / ".env"
 DEFAULT_MODEL = "gemini-3.8-flash"
 SCHEMA_VERSION = "1.0"
@@ -40,6 +40,7 @@ MAX_TRANSIENT_RETRIES = 3  # per model call, for rate limits and server errors
 TRANSIENT_CODES = {429, 500, 502, 503, 504}
 DEFAULT_CANDIDATES = 3
 DEFAULT_CROP_X = 0.5
+KEY_ORDER = ("schema_version", "meta", "style", "references", "narration", "shots", "music", "end_card")
 
 SYSTEM_PROMPT = """You are the storyboard writer for vid-forge, a pipeline that makes a 60-90 second AI short film.
 Turn the user's brief into ONE JSON object that conforms exactly to the JSON Schema below.
@@ -47,7 +48,7 @@ Turn the user's brief into ONE JSON object that conforms exactly to the JSON Sch
 Output rules
 - Return only the JSON object. No markdown fences, no commentary.
 - Do not add properties the schema does not define.
-- Omit these fields; the pipeline fills them in: schema_version, meta.generation, keyframe.seed, keyframe.candidates, keyframe.selected, motion.seed, crop_x.
+- Omit these fields; the pipeline fills them in: schema_version, meta.generation, keyframe.seed, keyframe.candidates, keyframe.selected, motion.seed, crop_x, references[].kind, references[].path, references[].sha256.
 
 Film rules
 - Total of all shot duration_s plus end_card.duration_s must be between 60 and 90 seconds. Aim for 12 to 16 shots of 3 to 6 seconds.
@@ -61,6 +62,15 @@ Film rules
 - Music: instrumental, cues cover the whole film in order with no overlap, and each cue has a prompt of genre, instruments, mood and tempo written in English.
 - end_card.text must say the film was made with AI.
 - Use "am"-style BCP-47 codes for narration_language. subtitle_language is always "en".
+
+Reference images
+- The user may attach reference images, each labelled with an id such as character_girl, scene_village_well or style_papercut. Study them.
+- Return a top-level "references" array with one object {"id", "description"} per attached image: say what it shows, in your own words, in 10 to 300 characters.
+- character_<name>: the identity of a recurring character. Define the key <name> in style.characters with a description that matches the image (age, hair, clothing, colours). Where the brief and the image disagree, follow the image.
+- scene_<name>: a place or an object. List its id in shot.references for each shot set there.
+- style_<name>: the overall look. Use it to write style.prefix and style.palette. Never list style ids in shot.references.
+- Do not list character ids in shot.references; the pipeline adds them from shot.characters. At most 4 ids per shot.
+- With no attached images, return "references": [].
 
 JSON Schema:
 <<SCHEMA>>"""
@@ -109,7 +119,14 @@ def _derive_seed(project: str, shot_id: str, kind: str) -> int:
     return int(digest[:8], 16)
 
 
-def _finalise(data: Any, *, project: str, model: str, brief_sha256: str) -> Any:
+def _finalise(
+    data: Any,
+    *,
+    project: str,
+    model: str,
+    brief_sha256: str,
+    refs: list[ReferenceFile],
+) -> Any:
     """Fill the fields the pipeline owns. Leaves anything malformed for the validator to report."""
     if not isinstance(data, dict):
         return data
@@ -122,6 +139,26 @@ def _finalise(data: Any, *, project: str, model: str, brief_sha256: str) -> Any:
             "brief_sha256": brief_sha256,
         }
 
+    # The registry comes from the files on disk. The model only supplies descriptions,
+    # so kind, path and hash can never be invented or mistyped.
+    described: dict[str, str] = {}
+    model_refs = data.get("references")
+    if isinstance(model_refs, list):
+        for item in model_refs:
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("description"), str):
+                described[item["id"]] = item["description"].strip()
+    data["references"] = [
+        {
+            "id": ref.id,
+            "kind": ref.kind,
+            "path": ref.rel_path,
+            "description": described.get(ref.id, ""),
+            "sha256": ref.sha256,
+        }
+        for ref in refs
+    ]
+    character_refs = {ref.name: ref.id for ref in refs if ref.kind == "character"}
+
     shots = data.get("shots")
     if isinstance(shots, list):
         for shot in shots:
@@ -129,6 +166,16 @@ def _finalise(data: Any, *, project: str, model: str, brief_sha256: str) -> Any:
                 continue
             shot_id = str(shot.get("id", ""))
             shot.setdefault("crop_x", DEFAULT_CROP_X)
+
+            shot_refs = shot.get("references", [])
+            characters = shot.get("characters", [])
+            if isinstance(shot_refs, list) and isinstance(characters, list):
+                for name in characters:
+                    ref_id = character_refs.get(name) if isinstance(name, str) else None
+                    if ref_id and ref_id not in shot_refs:
+                        shot_refs.append(ref_id)
+                shot["references"] = shot_refs
+
             keyframe = shot.get("keyframe")
             if isinstance(keyframe, dict):
                 keyframe.setdefault("seed", _derive_seed(project, shot_id, "keyframe"))
@@ -138,7 +185,10 @@ def _finalise(data: Any, *, project: str, model: str, brief_sha256: str) -> Any:
             if isinstance(motion, dict) and motion.get("type") == "i2v":
                 motion.setdefault("seed", _derive_seed(project, shot_id, "motion"))
 
-    return {"schema_version": SCHEMA_VERSION, **{k: v for k, v in data.items() if k != "schema_version"}}
+    data["schema_version"] = SCHEMA_VERSION
+    ordered = {key: data[key] for key in KEY_ORDER if key in data}
+    ordered.update({key: value for key, value in data.items() if key not in ordered})
+    return ordered
 
 
 def _extract_json(text: str) -> Any:
@@ -174,6 +224,17 @@ def _text_content(role: str, text: str) -> types.Content:
     return types.Content(role=role, parts=[types.Part.from_text(text=text)])
 
 
+def _first_message(brief: str, refs: list[ReferenceFile]) -> types.Content:
+    """The brief, followed by each reference image preceded by a label giving its id."""
+    parts = [types.Part.from_text(text=f"Brief:\n\n{brief}")]
+    if refs:
+        parts.append(types.Part.from_text(text="Reference images follow. Each one is labelled with its id."))
+        for ref in refs:
+            parts.append(types.Part.from_text(text=f"Reference image id: {ref.id} (kind: {ref.kind})"))
+            parts.append(types.Part.from_bytes(data=ref.read_bytes(), mime_type=ref.mime_type))
+    return types.Content(role="user", parts=parts)
+
+
 def _repair_message(report: ValidationReport) -> str:
     shown = report.errors[:25]
     extra = len(report.errors) - len(shown)
@@ -189,28 +250,13 @@ def _repair_message(report: ValidationReport) -> str:
 
 def _summary(data: dict[str, Any]) -> str:
     total = sum(shot["duration_s"] for shot in data["shots"]) + data["end_card"]["duration_s"]
-    return (
+    text = (
         f"{len(data['shots'])} shots, {len(data['narration'])} narration lines, "
         f"{len(data['music']['cues'])} music cues, {total:g}s total"
     )
-
-
-def _existing_brief_digest(path: Path) -> str | None:
-    """Return meta.generation.brief_sha256 from an existing storybook, or None."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    meta = data.get("meta")
-    if not isinstance(meta, dict):
-        return None
-    generation = meta.get("generation")
-    if not isinstance(generation, dict):
-        return None
-    digest = generation.get("brief_sha256")
-    return digest if isinstance(digest, str) else None
+    if data.get("references"):
+        text += f", {len(data['references'])} reference image(s)"
+    return text
 
 
 def run_storyboard(
@@ -222,12 +268,12 @@ def run_storyboard(
     model: str | None = None,
     max_attempts: int = MAX_ATTEMPTS,
 ) -> int:
-    """Generate and validate projects/<name>/production/storybook.json. Returns a process exit code."""
+    """Generate and validate projects/<name>/production/storyboard.json. Returns a process exit code."""
     load_dotenv(env_file)
 
     project = project_dir.name
     brief_path = project_dir / "input" / "brief.md"
-    target = project_dir / "production" / "storybook.json"
+    target = storyboard_path(project_dir)
     raw_dir = project_dir / "outputs" / "storyboard"
     runs_file = project_dir / "runs.jsonl"
 
@@ -253,39 +299,36 @@ def run_storyboard(
         )
         return 1
 
-    brief_sha256 = hashlib.sha256(brief.encode("utf-8")).hexdigest()
-
     if target.exists() and not force:
-        existing_digest = _existing_brief_digest(target)
-        if existing_digest == brief_sha256:
-            print(
-                f"Up to date: {_rel(target, base_dir)} already matches {_rel(brief_path, base_dir)} "
-                f"(sha256 {brief_sha256[:12]}); skipping generation."
-            )
-            return 0
-        reason = (
-            f"{_rel(brief_path, base_dir)} has changed since {_rel(target, base_dir)} was generated"
-            if existing_digest is not None
-            else f"{_rel(target, base_dir)} already exists"
-        )
         print(
-            f"Error: {reason}. "
-            "Pass --force to regenerate it (the current file is saved as storybook.json.bak).",
+            f"Error: {_rel(target, base_dir)} already exists. "
+            "Pass --force to regenerate it (the current file is saved as storyboard.json.bak).",
             file=sys.stderr,
         )
         return 1
 
+    refs, ref_errors = scan_references(project_dir)
+    if ref_errors:
+        print("Error: problem(s) in input/references/:", file=sys.stderr)
+        for message in ref_errors:
+            print(f"  - {message}", file=sys.stderr)
+        return 1
+
     schema = load_schema()
-    model = model or os.getenv("GEMINI_MODEL", "").strip() or os.getenv("STORYBOARD_MODEL", "").strip() or DEFAULT_MODEL
+    model = model or os.getenv("STORYBOARD_MODEL", "").strip() or os.getenv("GEMINI_MODEL", "").strip() or DEFAULT_MODEL
+    brief_sha256 = hashlib.sha256(brief.encode("utf-8")).hexdigest()
 
     client = genai.Client(api_key=api_key)
     config = types.GenerateContentConfig(
         system_instruction=SYSTEM_PROMPT.replace("<<SCHEMA>>", json.dumps(schema, indent=2)),
         response_mime_type="application/json",
     )
-    contents: list[types.Content] = [_text_content("user", f"Brief:\n\n{brief}")]
+    contents: list[types.Content] = [_first_message(brief, refs)]
 
-    print(f"Generating storyboard for '{project}' with {model}...\n")
+    print(f"Generating storyboard for '{project}' with {model}...")
+    if refs:
+        print(f"Using {len(refs)} reference image(s): {', '.join(ref.id for ref in refs)}")
+    print()
 
     last_report = ValidationReport()
     for attempt in range(1, max_attempts + 1):
@@ -299,6 +342,7 @@ def run_storyboard(
             "params": {"response_mime_type": "application/json"},
             "attempt": attempt,
             "brief_sha256": brief_sha256,
+            "references": [ref.id for ref in refs],
         }
         start = time.perf_counter()
         try:
@@ -332,8 +376,8 @@ def run_storyboard(
         except json.JSONDecodeError as exc:
             report = ValidationReport(errors=[f"response is not valid JSON: {exc}"])
         else:
-            data = _finalise(data, project=project, model=model, brief_sha256=brief_sha256)
-            report = validate_storyboard(data, schema)
+            data = _finalise(data, project=project, model=model, brief_sha256=brief_sha256, refs=refs)
+            report = validate_storyboard(data, schema, project_dir=project_dir)
 
         record.update(
             success=report.ok,

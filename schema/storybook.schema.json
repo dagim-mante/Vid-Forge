@@ -10,6 +10,12 @@
     "schema_version": { "const": "1.0" },
     "meta": { "$ref": "#/$defs/meta" },
     "style": { "$ref": "#/$defs/style" },
+    "references": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/reference" },
+      "description": "Reference images from input/references/. Optional; filled in by `vid-forge storyboard`."
+    },
     "narration": {
       "type": "array",
       "minItems": 3,
@@ -30,7 +36,33 @@
     "lineId": { "type": "string", "pattern": "^line_[0-9]{2,3}$" },
     "cueId": { "type": "string", "pattern": "^cue_[0-9]{2,3}$" },
     "characterId": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,31}$" },
+    "referenceId": { "type": "string", "pattern": "^(character|scene|style)_[a-z][a-z0-9_]{1,31}$" },
     "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "path", "description", "sha256"],
+      "properties": {
+        "id": { "$ref": "#/$defs/referenceId" },
+        "kind": {
+          "enum": ["character", "scene", "style"],
+          "description": "character: identity of a recurring character. scene: a place or object. style: overall look, applies to every shot."
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^input/references/[A-Za-z0-9][A-Za-z0-9_.-]*$",
+          "description": "Relative to the project folder."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 300,
+          "description": "What the image shows, in words. The fallback for models that cannot take image input."
+        },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
 
     "meta": {
       "type": "object",
@@ -173,6 +205,13 @@
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/characterId" },
           "description": "Keys of style.characters that appear in this shot."
+        },
+        "references": {
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/referenceId" },
+          "description": "Character and scene reference images used for this shot. Style references apply to every shot and are not listed."
         },
         "keyframe": {
           "type": "object",

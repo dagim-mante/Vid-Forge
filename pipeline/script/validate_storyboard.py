@@ -21,8 +21,24 @@ from typing import Any
 
 from jsonschema import Draft202012Validator, FormatChecker
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = ROOT_DIR / "schema" / "storybook.schema.json"
+from reference_images import sha256_file
+
+SCHEMA_RELATIVE = Path("schema") / "storybook.schema.json"
+
+
+def _find_root() -> Path:
+    """Walk up from this file to the repository root (the folder that holds schema/)."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / SCHEMA_RELATIVE).is_file():
+            return parent
+    raise RuntimeError(f"Could not find {SCHEMA_RELATIVE.as_posix()} in any folder above {__file__}")
+
+
+ROOT_DIR = _find_root()
+SCHEMA_PATH = ROOT_DIR / SCHEMA_RELATIVE
+
+# Where a project keeps its storyboard. Every stage should use storyboard_path().
+STORYBOARD_RELATIVE = Path("production") / "storyboard.json"
 
 MIN_TOTAL_SECONDS = 60.0
 MAX_TOTAL_SECONDS = 90.0
@@ -53,6 +69,11 @@ class ValidationReport:
         if not lines:
             lines.append("Storyboard is valid.")
         return "\n".join(lines)
+
+
+def storyboard_path(project_dir: Path) -> Path:
+    """projects/<name>/production/storyboard.json"""
+    return project_dir / STORYBOARD_RELATIVE
 
 
 def load_schema(path: Path = SCHEMA_PATH) -> dict[str, Any]:
@@ -99,8 +120,11 @@ def _duplicates(values: list[str]) -> list[str]:
     return dupes
 
 
-def _semantic_checks(data: dict[str, Any]) -> tuple[list[str], list[str]]:
-    """Checks that need the whole document. Assumes the schema already passed."""
+def _semantic_checks(data: dict[str, Any], project_dir: Path | None) -> tuple[list[str], list[str]]:
+    """Checks that need the whole document. Assumes the schema already passed.
+
+    With ``project_dir`` the reference image files are checked on disk too.
+    """
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -113,6 +137,36 @@ def _semantic_checks(data: dict[str, Any]) -> tuple[list[str], list[str]]:
     for label, items in (("shots", shots), ("narration", lines), ("music.cues", cues)):
         for dupe in _duplicates([item["id"] for item in items]):
             errors.append(f"{label}: duplicate id {dupe!r}")
+
+    # Reference images.
+    references: list[dict[str, Any]] = data.get("references", [])
+    ref_by_id = {ref["id"]: ref for ref in references}
+    character_refs: dict[str, str] = {}  # character key -> reference id
+    for dupe in _duplicates([ref["id"] for ref in references]):
+        errors.append(f"references: duplicate id {dupe!r}")
+    for index, ref in enumerate(references):
+        where = f"references[{index}] ({ref['id']})"
+        prefix, _, name = ref["id"].partition("_")
+        if ref["kind"] != prefix:
+            errors.append(f"{where}.kind: {ref['kind']!r} does not match the id prefix {prefix!r}")
+        if Path(ref["path"]).stem != ref["id"]:
+            errors.append(f"{where}.path: the file name must be {ref['id']}.<extension>")
+        if ref["kind"] == "character":
+            character_refs[name] = ref["id"]
+            if name not in characters:
+                errors.append(f"{where}: no character {name!r} in style.characters")
+        if project_dir is not None:
+            image = project_dir / ref["path"]
+            if not image.is_file():
+                errors.append(f"{where}.path: file not found ({ref['path']})")
+            elif sha256_file(image) != ref["sha256"]:
+                warnings.append(
+                    f"{where}: the image changed after the storyboard was written; "
+                    "shots that use it will regenerate"
+                )
+    if sum(1 for ref in references if ref["kind"] == "style") > 1:
+        warnings.append("references: more than one style reference; the keyframes stage will have to blend them")
+    used_refs: set[str] = set()
 
     # References resolve.
     line_ids = [line["id"] for line in lines]
@@ -133,6 +187,25 @@ def _semantic_checks(data: dict[str, Any]) -> tuple[list[str], list[str]]:
         for character in shot["characters"]:
             if character not in characters:
                 errors.append(f"{where}.characters: {character!r} is not defined in style.characters")
+        shot_refs: list[str] = shot.get("references", [])
+        for ref_id in shot_refs:
+            ref = ref_by_id.get(ref_id)
+            if ref is None:
+                errors.append(f"{where}.references: {ref_id!r} is not in the references list")
+                continue
+            used_refs.add(ref_id)
+            if ref["kind"] == "style":
+                errors.append(
+                    f"{where}.references: {ref_id!r} is a style reference; "
+                    "style references apply to every shot, so do not list them"
+                )
+        for character in shot["characters"]:
+            ref_id = character_refs.get(character)
+            if ref_id is not None and ref_id not in shot_refs:
+                warnings.append(
+                    f"{where}: character {character!r} has a reference image ({ref_id}) "
+                    "that this shot does not list"
+                )
         selected = shot["keyframe"]["selected"]
         if selected is not None and selected > shot["keyframe"]["candidates"]:
             errors.append(
@@ -144,6 +217,9 @@ def _semantic_checks(data: dict[str, Any]) -> tuple[list[str], list[str]]:
                 f"{where}: {shot['duration_s']}s is long for an image-to-video clip; "
                 "consider a shorter shot or a Ken Burns move"
             )
+    for ref in references:
+        if ref["kind"] != "style" and ref["id"] not in used_refs:
+            warnings.append(f"references: {ref['id']} is not used by any shot")
     for line_id in line_ids:
         if line_id not in referenced:
             errors.append(f"narration: {line_id} is not used by any shot")
@@ -194,26 +270,42 @@ def _semantic_checks(data: dict[str, Any]) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
-def validate_storyboard(data: Any, schema: dict[str, Any] | None = None) -> ValidationReport:
-    """Validate an already-parsed storyboard."""
+def validate_storyboard(
+    data: Any,
+    schema: dict[str, Any] | None = None,
+    project_dir: Path | None = None,
+) -> ValidationReport:
+    """Validate an already-parsed storyboard. Pass project_dir to check reference files on disk."""
     schema = schema or load_schema()
     errors = _schema_errors(data, schema)
     if errors:
         # Semantic checks assume a structurally valid document.
         return ValidationReport(errors=errors)
-    semantic_errors, warnings = _semantic_checks(data)
+    semantic_errors, warnings = _semantic_checks(data, project_dir)
     return ValidationReport(errors=semantic_errors, warnings=warnings)
 
 
-def validate_file(path: Path, schema: dict[str, Any] | None = None) -> ValidationReport:
-    """Validate a storybook.json file on disk."""
+def validate_file(
+    path: Path,
+    schema: dict[str, Any] | None = None,
+    project_dir: Path | None = None,
+) -> ValidationReport:
+    """Validate a storyboard.json file on disk.
+
+    Reference image paths in the storyboard are relative to the project folder,
+    not to the folder holding storyboard.json. Pass project_dir, or leave it out
+    when the file sits at <project>/production/storyboard.json and it is inferred.
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return ValidationReport(errors=[f"file not found: {path}"])
     except json.JSONDecodeError as exc:
         return ValidationReport(errors=[f"{path.name} is not valid JSON: {exc}"])
-    return validate_storyboard(data, schema)
+    if project_dir is None:
+        in_production = path.parent.name == STORYBOARD_RELATIVE.parent.name
+        project_dir = path.parent.parent if in_production else path.parent
+    return validate_storyboard(data, schema, project_dir=project_dir)
 
 
 def main(argv: list[str] | None = None) -> int:

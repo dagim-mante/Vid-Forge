@@ -21,8 +21,9 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 PROJECTS_DIR = ROOT_DIR / "projects"
 PIPELINE_DIR = ROOT_DIR / "pipeline"
 SMOKE_TEST_SCRIPT = PIPELINE_DIR / "smoke-tests" / "smoke_test.py"
-STORYBOARD_SCRIPT = PIPELINE_DIR / "script" / "storyboard.py"
-VALIDATE_SCRIPT = PIPELINE_DIR / "script" / "validate_storyboard.py"
+SCRIPT_DIR = PIPELINE_DIR / "script"
+STORYBOARD_SCRIPT = SCRIPT_DIR / "storyboard.py"
+VALIDATE_SCRIPT = SCRIPT_DIR / "validate_storyboard.py"
 BRIEF_TEMPLATE = ROOT_DIR / "templates" / "brief.md"
 PROJECT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRUE_VALUES = {"1", "true", "yes", "y"}
@@ -35,11 +36,12 @@ USAGE = """Usage:
   vid-forge smoke_test [project=<project_name>]
 
 Commands:
-  init        Create projects/<project_name>/ with input/brief.md to fill in.
-  storyboard  Generate projects/<project_name>/production/storybook.json from input/brief.md.
+  init        Create projects/<project_name>/ with input/brief.md to fill in, an
+              input/references/ folder for optional reference images, and production/.
+  storyboard  Generate projects/<project_name>/production/storyboard.json from input/brief.md.
               The output is validated against schema/storybook.schema.json first.
-              Refuses to overwrite an existing storybook unless --force is given.
-  validate    Validate an existing production/storybook.json (for example after hand edits).
+              Refuses to overwrite an existing storyboard unless --force is given.
+  validate    Validate an existing storyboard.json (for example after hand edits).
   smoke_test  Run smoke tests (writes under projects/<project_name>/ if given)."""
 
 
@@ -183,7 +185,10 @@ def cmd_init(args: Sequence[str]) -> int:
         return 1
 
     input_dir = project_dir / "input"
-    input_dir.mkdir(parents=True)
+    references_dir = input_dir / "references"
+    references_dir.mkdir(parents=True)
+    (references_dir / ".gitkeep").touch()
+    (project_dir / "production").mkdir()
     brief_path = input_dir / "brief.md"
     if BRIEF_TEMPLATE.is_file():
         shutil.copyfile(BRIEF_TEMPLATE, brief_path)
@@ -197,6 +202,10 @@ def cmd_init(args: Sequence[str]) -> int:
     print(f"Created project '{valid_name}' at {project_dir.relative_to(ROOT_DIR).as_posix()}")
     if brief_path.is_file():
         print(f"Next: fill in {brief_path.relative_to(ROOT_DIR).as_posix()}, then run: storyboard project={valid_name}")
+        print(
+            f"Optional: add reference images to {references_dir.relative_to(ROOT_DIR).as_posix()}/ "
+            "named character_<name>.png, scene_<name>.jpg or style_<name>.webp"
+        )
     return 0
 
 
@@ -241,17 +250,17 @@ def cmd_validate(args: Sequence[str]) -> int:
     if project_dir is None:
         return code
 
-    storyboard_path = project_dir / "production" / "storybook.json"
-    if not storyboard_path.is_file():
+    module = _load_module(VALIDATE_SCRIPT, "validate_storyboard")
+    storyboard_file = module.storyboard_path(project_dir)
+    if not storyboard_file.is_file():
         print(
-            f"Error: {storyboard_path.relative_to(ROOT_DIR).as_posix()} not found. "
+            f"Error: {storyboard_file.relative_to(ROOT_DIR).as_posix()} not found. "
             f"Create it with: storyboard project={project_dir.name}",
             file=sys.stderr,
         )
         return 1
 
-    module = _load_module(VALIDATE_SCRIPT, "validate_storyboard")
-    report = module.validate_file(storyboard_path)
+    report = module.validate_file(storyboard_file, project_dir=project_dir)
     print(report.format())
     return 0 if report.ok else 1
 
