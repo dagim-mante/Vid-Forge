@@ -3,3 +3,4 @@ kaggle
 six
 requests
 python-dotenv
+jsonschema

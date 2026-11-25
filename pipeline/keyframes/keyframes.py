@@ -29,6 +29,13 @@ from typing import Any
 from dotenv import load_dotenv
 import requests
 
+# The storyboard validator is shared with the script stage, not stored beside
+# this file. Add its directory so both the CLI loader and direct script usage
+# can import it reliably.
+_SCRIPT_DIR = Path(__file__).resolve().parents[1] / "script"
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
 from validate_storyboard import ROOT_DIR, storyboard_path, validate_file
 
 DEFAULT_CLOUDFLARE_IMAGE_MODEL = "@cf/black-forest-labs/flux-2-klein-4b"
@@ -39,6 +46,7 @@ MAX_TRANSIENT_RETRIES = 3
 TRANSIENT_CODES = {429, 500, 502, 503, 504}
 # FLUX.2 reference images must be < 512 × 512 px; we resize inline.
 MAX_REF_SIDE_PX = 500
+MAX_CANDIDATES = 6  # Must match schema/storybook.schema.json.
 
 # Where generated images live inside the project.
 KEYFRAMES_RELATIVE = Path("production") / "keyframes"
@@ -91,6 +99,14 @@ def _load_keyframes_json(path: Path) -> dict[str, Any]:
 
 
 def _save_keyframes_json(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _save_storyboard(path: Path, data: dict[str, Any]) -> None:
+    """Persist an explicit candidate-count override atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -419,6 +435,7 @@ def run_keyframes(
     project_dir: Path,
     *,
     shot_id: str | None = None,
+    candidate_count: int | None = None,
     force: bool = False,
     env_file: Path = ROOT_DIR / ".env",
     base_dir: Path = ROOT_DIR,
@@ -426,6 +443,9 @@ def run_keyframes(
 ) -> int:
     """Generate keyframe candidates for a project. Returns a process exit code."""
     load_dotenv(env_file)
+    if candidate_count is not None and not 1 <= candidate_count <= MAX_CANDIDATES:
+        print(f"Error: candidate-count must be between 1 and {MAX_CANDIDATES}.", file=sys.stderr)
+        return 2
     model = model or os.getenv("CLOUDFLARE_IMAGE_MODEL", DEFAULT_CLOUDFLARE_IMAGE_MODEL)
 
     account_id, api_key = _cf_credentials()
@@ -456,16 +476,41 @@ def run_keyframes(
 
     storyboard: dict[str, Any] = json.loads(sb_path.read_text(encoding="utf-8"))
     all_shots: list[dict[str, Any]] = storyboard["shots"]
+
+    # Resolve the scope before applying an explicit count to the storyboard.
+    if shot_id is not None:
+        scoped = [s for s in all_shots if s["id"] == shot_id]
+        if not scoped:
+            print(f"Error: shot '{shot_id}' not found in {_rel(sb_path, base_dir)}.", file=sys.stderr)
+            return 1
+    else:
+        scoped = all_shots
+
+    storyboard_changed = False
+    if candidate_count is not None:
+        for shot in scoped:
+            selected = shot["keyframe"].get("selected")
+            if selected is not None and selected > candidate_count:
+                print(
+                    f"Error: {shot['id']} has selected candidate {selected}, which exceeds candidate-count "
+                    f"{candidate_count}. Change the selection first or use a larger candidate-count.",
+                    file=sys.stderr,
+                )
+                return 1
+        for shot in scoped:
+            if shot["keyframe"].get("candidates") != candidate_count:
+                shot["keyframe"]["candidates"] = candidate_count
+                storyboard_changed = True
+        if storyboard_changed:
+            _save_storyboard(sb_path, storyboard)
+
     runs_file = project_dir / "runs.jsonl"
     kf_json_path = project_dir / KEYFRAMES_JSON_RELATIVE
     kf_data = _load_keyframes_json(kf_json_path)
 
     # Filter to the requested shot or all shots.
     if shot_id is not None:
-        targets = [s for s in all_shots if s["id"] == shot_id]
-        if not targets:
-            print(f"Error: shot '{shot_id}' not found in {_rel(sb_path, base_dir)}.", file=sys.stderr)
-            return 1
+        targets = scoped
     else:
         targets = [s for s in all_shots if _shot_needs_generation(project_dir, s, force)]
 

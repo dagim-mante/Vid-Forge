@@ -3,8 +3,10 @@
 Supported commands:
     init name=<project_name>
     storyboard project=<project_name> [--force]
+    keyframes project=<project_name> [--shot shot_01] [--candidate-count <n>] [--force]
     validate project=<project_name>
     narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]
+    video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15] [--force]
     radio_cut project=<project_name>
     smoke_test [project=<project_name>]
 """
@@ -14,7 +16,6 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import re
-import shutil
 import sys
 from types import ModuleType
 from typing import Sequence
@@ -24,12 +25,14 @@ PROJECTS_DIR = ROOT_DIR / "projects"
 PIPELINE_DIR = ROOT_DIR / "pipeline"
 SMOKE_TEST_SCRIPT = PIPELINE_DIR / "smoke-tests" / "smoke_test.py"
 SCRIPT_DIR = PIPELINE_DIR / "script"
+KEYFRAMES_DIR = PIPELINE_DIR / "keyframes"
 STORYBOARD_SCRIPT = SCRIPT_DIR / "storyboard.py"
+KEYFRAMES_SCRIPT = KEYFRAMES_DIR / "keyframes.py"
 VALIDATE_SCRIPT = SCRIPT_DIR / "validate_storyboard.py"
 NARRATION_DIR = PIPELINE_DIR / "narration"
 NARRATION_SCRIPT = NARRATION_DIR / "narration.py"
+VIDEO_ASSEMBLE_SCRIPT = PIPELINE_DIR / "video-assemble" / "video_assemble.py"
 RADIO_CUT_SCRIPT = NARRATION_DIR / "radio_cut.py"
-BRIEF_TEMPLATE = ROOT_DIR / "templates" / "brief.md"
 PROJECT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRUE_VALUES = {"1", "true", "yes", "y"}
 FALSE_VALUES = {"0", "false", "no", "n"}
@@ -37,10 +40,14 @@ FALSE_VALUES = {"0", "false", "no", "n"}
 USAGE = """Usage:
   vid-forge init name=<project_name>
   vid-forge storyboard project=<project_name> [--force]
+  vid-forge keyframes project=<project_name> [--shot shot_01] [--candidate-count <n>] [--force]
   vid-forge validate project=<project_name>
   vid-forge narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]
   vid-forge radio_cut project=<project_name>
   vid-forge smoke_test [project=<project_name>]
+  vid-forge video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15]
+              [--force] [--dry-run] [--validate-only] [--accelerator <name>]
+              [--keyframes-dir <path>] [--steps <n>] [--guidance <value>]
 
 Commands:
   init        Create projects/<project_name>/ with input/brief.md to fill in, an
@@ -48,12 +55,15 @@ Commands:
   storyboard  Generate projects/<project_name>/production/storyboard.json from input/brief.md.
               The output is validated against schema/storyboard.schema.json first.
               Refuses to overwrite an existing storyboard unless --force is given.
+  keyframes   Generate candidate images for every shot or one shot; candidates are never auto-selected.
+              --candidate-count updates keyframe.candidates in the storyboard for the selected scope (1 to 6).
   validate    Validate an existing storyboard.json (for example after hand edits).
   narration   Generate the narration with Gemini TTS (one audio file per line, cached),
               work out the timing, write English subtitles, then assemble the radio cut:
               narration over placeholder music on a black screen. line=<id> regenerates
               one line only; --no-assemble skips the radio cut.
   radio_cut   Rebuild the radio cut from existing narration audio (no API calls).
+  video       Generate selected-keyframe clips, using local Ken Burns and Kaggle Wan i2v.
   smoke_test  Run smoke tests (writes under projects/<project_name>/ if given)."""
 
 
@@ -202,14 +212,7 @@ def cmd_init(args: Sequence[str]) -> int:
     (references_dir / ".gitkeep").touch()
     (project_dir / "production").mkdir()
     brief_path = input_dir / "brief.md"
-    if BRIEF_TEMPLATE.is_file():
-        shutil.copyfile(BRIEF_TEMPLATE, brief_path)
-    else:
-        print(
-            f"Warning: template not found at {BRIEF_TEMPLATE.relative_to(ROOT_DIR).as_posix()}; "
-            "create input/brief.md yourself.",
-            file=sys.stderr,
-        )
+    brief_path.touch()
 
     print(f"Created project '{valid_name}' at {project_dir.relative_to(ROOT_DIR).as_posix()}")
     if brief_path.is_file():
@@ -277,6 +280,35 @@ def cmd_validate(args: Sequence[str]) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_keyframes(args: Sequence[str]) -> int:
+    """Handle `keyframes project=<name> [--shot <shot_id>] [--candidate-count <n>] [--force]`."""
+    try:
+        options = _parse_options(args, value_keys=("project", "shot", "candidate-count"), flag_keys=("force",))
+    except SystemExit:
+        print("Usage: vid-forge keyframes project=<project_name> [--shot shot_01] [--candidate-count <n>] [--force]")
+        return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    project_dir, code = _resolve_project(options.get("project"))  # type: ignore[arg-type]
+    if project_dir is None:
+        return code
+    try:
+        candidate_count = int(str(options["candidate-count"])) if options.get("candidate-count") is not None else None
+    except ValueError:
+        print("Error: --candidate-count must be an integer between 1 and 6.", file=sys.stderr)
+        return 2
+    module = _load_module(KEYFRAMES_SCRIPT, "keyframes")
+    return int(module.run_keyframes(
+        project_dir,
+        shot_id=options.get("shot"),  # type: ignore[arg-type]
+        candidate_count=candidate_count,
+        force=bool(options.get("force", False)),
+        env_file=ROOT_DIR / ".env",
+        base_dir=ROOT_DIR,
+    ))
+
+
 def cmd_narration(args: Sequence[str]) -> int:
     """Handle `narration project=<name> [line=<id>] [--force] [--no-assemble]`."""
     try:
@@ -322,6 +354,40 @@ def cmd_radio_cut(args: Sequence[str]) -> int:
 
     module = _load_module(RADIO_CUT_SCRIPT, "radio_cut")
     return int(module.run_radio_cut(project_dir, base_dir=ROOT_DIR))
+
+
+def cmd_video(args: Sequence[str]) -> int:
+    """Handle the video assembly stage (individual shot clips only)."""
+    try:
+        options = _parse_options(
+            args,
+            value_keys=("project", "shot", "provider", "accelerator", "keyframes-dir", "steps", "guidance"),
+            flag_keys=("force", "dry-run", "validate-only"),
+        )
+    except SystemExit:
+        print("Usage: vid-forge video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15] [--force] [--dry-run] [--validate-only]")
+        return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    project_dir, code = _resolve_project(options.get("project"))  # type: ignore[arg-type]
+    if project_dir is None:
+        return code
+    module = _load_module(VIDEO_ASSEMBLE_SCRIPT, "video_assemble")
+    override = options.get("keyframes-dir")
+    return int(module.run_video(
+        project_dir,
+        provider_name=str(options.get("provider", "wan22")),
+        shot_id=options.get("shot"),  # type: ignore[arg-type]
+        force=bool(options.get("force", False)),
+        dry_run=bool(options.get("dry-run", False)),
+        validate_only=bool(options.get("validate-only", False)),
+        accelerator=options.get("accelerator"),  # type: ignore[arg-type]
+        keyframes_dir=Path(str(override)) if override else None,
+        generation_steps=int(str(options["steps"])) if options.get("steps") is not None else 50,
+        guidance=float(str(options["guidance"])) if options.get("guidance") is not None else 5.0,
+        env_file=ROOT_DIR / ".env",
+    ))
 
 
 def cmd_smoke_test(args: Sequence[str]) -> int:
@@ -381,10 +447,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_storyboard(rest)
     if command == "validate":
         return cmd_validate(rest)
+    if command == "keyframes":
+        return cmd_keyframes(rest)
     if command == "narration":
         return cmd_narration(rest)
     if command == "radio_cut":
         return cmd_radio_cut(rest)
+    if command == "video":
+        return cmd_video(rest)
     if command == "smoke_test":
         return cmd_smoke_test(rest)
 
