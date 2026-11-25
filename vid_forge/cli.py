@@ -3,8 +3,9 @@
 Supported commands:
     init name=<project_name>
     storyboard project=<project_name> [--force]
-    keyframes project=<project_name> [--shot <shot_id>] [--force]
     validate project=<project_name>
+    narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]
+    radio_cut project=<project_name>
     smoke_test [project=<project_name>]
 """
 
@@ -25,7 +26,9 @@ SMOKE_TEST_SCRIPT = PIPELINE_DIR / "smoke-tests" / "smoke_test.py"
 SCRIPT_DIR = PIPELINE_DIR / "script"
 STORYBOARD_SCRIPT = SCRIPT_DIR / "storyboard.py"
 VALIDATE_SCRIPT = SCRIPT_DIR / "validate_storyboard.py"
-KEYFRAMES_SCRIPT = PIPELINE_DIR / "keyframes" / "keyframes.py"
+NARRATION_DIR = PIPELINE_DIR / "narration"
+NARRATION_SCRIPT = NARRATION_DIR / "narration.py"
+RADIO_CUT_SCRIPT = NARRATION_DIR / "radio_cut.py"
 BRIEF_TEMPLATE = ROOT_DIR / "templates" / "brief.md"
 PROJECT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRUE_VALUES = {"1", "true", "yes", "y"}
@@ -34,19 +37,23 @@ FALSE_VALUES = {"0", "false", "no", "n"}
 USAGE = """Usage:
   vid-forge init name=<project_name>
   vid-forge storyboard project=<project_name> [--force]
-  vid-forge keyframes project=<project_name> [--shot <shot_id>] [--force]
   vid-forge validate project=<project_name>
+  vid-forge narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]
+  vid-forge radio_cut project=<project_name>
   vid-forge smoke_test [project=<project_name>]
 
 Commands:
   init        Create projects/<project_name>/ with input/brief.md to fill in, an
               input/references/ folder for optional reference images, and production/.
   storyboard  Generate projects/<project_name>/production/storyboard.json from input/brief.md.
-              The output is validated against schema/storybook.schema.json first.
+              The output is validated against schema/storyboard.schema.json first.
               Refuses to overwrite an existing storyboard unless --force is given.
-  keyframes   Generate keyframe candidates for every shot, or one shot with --shot.
-              Pass --force to regenerate existing candidates.
   validate    Validate an existing storyboard.json (for example after hand edits).
+  narration   Generate the narration with Gemini TTS (one audio file per line, cached),
+              work out the timing, write English subtitles, then assemble the radio cut:
+              narration over placeholder music on a black screen. line=<id> regenerates
+              one line only; --no-assemble skips the radio cut.
+  radio_cut   Rebuild the radio cut from existing narration audio (no API calls).
   smoke_test  Run smoke tests (writes under projects/<project_name>/ if given)."""
 
 
@@ -270,12 +277,12 @@ def cmd_validate(args: Sequence[str]) -> int:
     return 0 if report.ok else 1
 
 
-def cmd_keyframes(args: Sequence[str]) -> int:
-    """Handle `keyframes project=<project_name> [--shot <shot_id>] [--force]`."""
+def cmd_narration(args: Sequence[str]) -> int:
+    """Handle `narration project=<name> [line=<id>] [--force] [--no-assemble]`."""
     try:
-        options = _parse_options(args, value_keys=("project", "shot"), flag_keys=("force",))
+        options = _parse_options(args, value_keys=("project", "line"), flag_keys=("force", "no-assemble"))
     except SystemExit:
-        print("Usage: vid-forge keyframes project=<project_name> [--shot <shot_id>] [--force]")
+        print("Usage: vid-forge narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]")
         return 0
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -285,19 +292,36 @@ def cmd_keyframes(args: Sequence[str]) -> int:
     if project_dir is None:
         return code
 
-    validation_dir = str(SCRIPT_DIR)
-    if validation_dir not in sys.path:
-        sys.path.insert(0, validation_dir)
-    module = _load_module(KEYFRAMES_SCRIPT, "keyframes")
+    module = _load_module(NARRATION_SCRIPT, "narration")
     return int(
-        module.run_keyframes(
+        module.run_narration(
             project_dir,
-            shot_id=options.get("shot"),  # type: ignore[arg-type]
             force=bool(options.get("force", False)),
+            only_line=options.get("line"),  # type: ignore[arg-type]
+            assemble=not bool(options.get("no-assemble", False)),
             env_file=ROOT_DIR / ".env",
             base_dir=ROOT_DIR,
         )
     )
+
+
+def cmd_radio_cut(args: Sequence[str]) -> int:
+    """Handle `radio_cut project=<name>`."""
+    try:
+        options = _parse_options(args, value_keys=("project",))
+    except SystemExit:
+        print("Usage: vid-forge radio_cut project=<project_name>")
+        return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    project_dir, code = _resolve_project(options.get("project"))  # type: ignore[arg-type]
+    if project_dir is None:
+        return code
+
+    module = _load_module(RADIO_CUT_SCRIPT, "radio_cut")
+    return int(module.run_radio_cut(project_dir, base_dir=ROOT_DIR))
 
 
 def cmd_smoke_test(args: Sequence[str]) -> int:
@@ -357,8 +381,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_storyboard(rest)
     if command == "validate":
         return cmd_validate(rest)
-    if command == "keyframes":
-        return cmd_keyframes(rest)
+    if command == "narration":
+        return cmd_narration(rest)
+    if command == "radio_cut":
+        return cmd_radio_cut(rest)
     if command == "smoke_test":
         return cmd_smoke_test(rest)
 
