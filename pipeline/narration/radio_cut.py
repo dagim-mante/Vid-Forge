@@ -100,8 +100,8 @@ def measure_loudness(ffmpeg: str, voice: Path, music: Path) -> dict[str, str] | 
         return None
 
 
-def render_radio_cut(ffmpeg: str, voice: Path, music: Path, seconds: float, output: Path) -> dict[str, Any]:
-    """Black video + voice + music ducked under the voice, loudness normalised in two passes.
+def render_radio_cut(ffmpeg: str, voice: Path, music: Path, srt: Path, seconds: float, output: Path) -> dict[str, Any]:
+    """Black video + voice + music ducked under the voice, loudness normalised in two passes, with burned-in subtitles.
 
     Single-pass loudnorm undershoots badly on a mix that is mostly music, so the mix is
     measured first and the second pass applies one fixed gain. Returns {"warnings", "measured_lufs"}.
@@ -119,20 +119,31 @@ def render_radio_cut(ffmpeg: str, voice: Path, music: Path, seconds: float, outp
     else:
         loudnorm = f"loudnorm={LOUDNESS_TARGET}"
         warnings.append("could not measure loudness; used single-pass normalisation, so the level may be low")
-    graph = _mix_graph(1, 2) + f";[mix]{loudnorm}[audio]"
+    
+    # Escape the SRT path for FFmpeg's subtitles filter (FFmpeg requires escaping colons and backslashes)
+    srt_path_escaped = str(srt).replace("\\", "/").replace(":", r"\:")
+    
+    # Add the subtitles filter to burn them into the video
+    graph = (
+        _mix_graph(1, 2) + 
+        f";[mix]{loudnorm}[audio];"
+        f"[0:v]subtitles='{srt_path_escaped}':force_style='Fontsize=24,Fontname=Arial,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1'[video]"
+    )
 
     if _has_encoder(ffmpeg, "libx264"):
         video_codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "30", "-tune", "stillimage"]
     else:
         video_codec = ["-c:v", "mpeg4", "-q:v", "5"]
         warnings.append("libx264 not available in this FFmpeg build; used mpeg4 for the video")
+    
     command = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "lavfi", "-i", f"color=c=black:s={VIDEO_SIZE}:r={FPS}:d={length}",
         "-i", str(voice),
         "-i", str(music),
         "-filter_complex", graph,
-        "-map", "0:v", "-map", "[audio]",
+        "-map", "[video]",  # Map the video stream with burned-in subtitles
+        "-map", "[audio]",
         *video_codec, "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "160k",
         "-t", length, "-movflags", "+faststart",
@@ -141,7 +152,6 @@ def render_radio_cut(ffmpeg: str, voice: Path, music: Path, seconds: float, outp
     output.parent.mkdir(parents=True, exist_ok=True)
     _run(command)
     return {"warnings": warnings, "measured_lufs": float(measured["input_i"]) if measured else None}
-
 
 def run_radio_cut(project_dir: Path, *, base_dir: Path) -> int:
     """Build outputs/radio_cut/radio_cut.mp4 from the narration outputs. Returns an exit code."""
@@ -163,6 +173,16 @@ def run_radio_cut(project_dir: Path, *, base_dir: Path) -> int:
 
     timing: dict[str, Any] = json.loads(timing_path.read_text(encoding="utf-8"))
     seconds = float(timing["total_s"])
+    
+    # Path to the 16x9 subtitles
+    srt_path = narration_folder / "narration_16x9.srt"
+    if not srt_path.is_file():
+        print(
+            f"Error: subtitles not found at {rel(srt_path, base_dir)}. "
+            f"The narration stage should have generated them.",
+            file=sys.stderr,
+        )
+        return 1
 
     record: dict[str, Any] = {
         "ts": utc_now(),
@@ -177,6 +197,7 @@ def run_radio_cut(project_dir: Path, *, base_dir: Path) -> int:
             "music_gain": MUSIC_GAIN,
             "duck": DUCK_SETTINGS,
             "loudness_target": LOUDNESS_TARGET,
+            "subtitles": str(srt_path.name),
         },
         "total_s": seconds,
     }
@@ -184,7 +205,7 @@ def run_radio_cut(project_dir: Path, *, base_dir: Path) -> int:
     try:
         ffmpeg = find_ffmpeg()
         make_placeholder_music(ffmpeg, seconds, music_path)
-        result = render_radio_cut(ffmpeg, voice_path, music_path, seconds, output)
+        result = render_radio_cut(ffmpeg, voice_path, music_path, srt_path, seconds, output)
     except Exception as exc:  # noqa: BLE001 - log any failure
         record.update(success=False, latency_ms=round((time.perf_counter() - start) * 1000), error=str(exc)[:500])
         append_run_record(runs_file, record)
@@ -203,5 +224,5 @@ def run_radio_cut(project_dir: Path, *, base_dir: Path) -> int:
     print(f"[PASS] radio cut rendered in {latency_ms}ms")
     for message in warnings:
         print(f"  warning: {message}")
-    print(f"\nWrote {rel(output, base_dir)} ({seconds:g}s, narration over placeholder music, black screen)")
+    print(f"\nWrote {rel(output, base_dir)} ({seconds:g}s, narration over placeholder music with burned-in subtitles)")
     return 0
