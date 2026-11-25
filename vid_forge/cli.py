@@ -3,6 +3,7 @@
 Supported commands:
     init name=<project_name>
     storyboard project=<project_name> [--force]
+    keyframes project=<project_name> [--shot <shot_id>] [--force]
     validate project=<project_name>
     smoke_test [project=<project_name>]
 """
@@ -24,6 +25,7 @@ SMOKE_TEST_SCRIPT = PIPELINE_DIR / "smoke-tests" / "smoke_test.py"
 SCRIPT_DIR = PIPELINE_DIR / "script"
 STORYBOARD_SCRIPT = SCRIPT_DIR / "storyboard.py"
 VALIDATE_SCRIPT = SCRIPT_DIR / "validate_storyboard.py"
+KEYFRAMES_SCRIPT = PIPELINE_DIR / "keyframes" / "keyframes.py"
 BRIEF_TEMPLATE = ROOT_DIR / "templates" / "brief.md"
 PROJECT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRUE_VALUES = {"1", "true", "yes", "y"}
@@ -32,6 +34,7 @@ FALSE_VALUES = {"0", "false", "no", "n"}
 USAGE = """Usage:
   vid-forge init name=<project_name>
   vid-forge storyboard project=<project_name> [--force]
+  vid-forge keyframes project=<project_name> [--shot <shot_id>] [--force]
   vid-forge validate project=<project_name>
   vid-forge smoke_test [project=<project_name>]
 
@@ -41,6 +44,8 @@ Commands:
   storyboard  Generate projects/<project_name>/production/storyboard.json from input/brief.md.
               The output is validated against schema/storybook.schema.json first.
               Refuses to overwrite an existing storyboard unless --force is given.
+  keyframes   Generate keyframe candidates for every shot, or one shot with --shot.
+              Pass --force to regenerate existing candidates.
   validate    Validate an existing storyboard.json (for example after hand edits).
   smoke_test  Run smoke tests (writes under projects/<project_name>/ if given)."""
 
@@ -265,6 +270,36 @@ def cmd_validate(args: Sequence[str]) -> int:
     return 0 if report.ok else 1
 
 
+def cmd_keyframes(args: Sequence[str]) -> int:
+    """Handle `keyframes project=<project_name> [--shot <shot_id>] [--force]`."""
+    try:
+        options = _parse_options(args, value_keys=("project", "shot"), flag_keys=("force",))
+    except SystemExit:
+        print("Usage: vid-forge keyframes project=<project_name> [--shot <shot_id>] [--force]")
+        return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    project_dir, code = _resolve_project(options.get("project"))  # type: ignore[arg-type]
+    if project_dir is None:
+        return code
+
+    validation_dir = str(SCRIPT_DIR)
+    if validation_dir not in sys.path:
+        sys.path.insert(0, validation_dir)
+    module = _load_module(KEYFRAMES_SCRIPT, "keyframes")
+    return int(
+        module.run_keyframes(
+            project_dir,
+            shot_id=options.get("shot"),  # type: ignore[arg-type]
+            force=bool(options.get("force", False)),
+            env_file=ROOT_DIR / ".env",
+            base_dir=ROOT_DIR,
+        )
+    )
+
+
 def cmd_smoke_test(args: Sequence[str]) -> int:
     """Handle `smoke_test [project=<project_name>]`."""
     try:
@@ -322,6 +357,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_storyboard(rest)
     if command == "validate":
         return cmd_validate(rest)
+    if command == "keyframes":
+        return cmd_keyframes(rest)
     if command == "smoke_test":
         return cmd_smoke_test(rest)
 
