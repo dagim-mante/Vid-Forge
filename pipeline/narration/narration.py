@@ -58,7 +58,6 @@ ENV_FILE = ROOT_DIR / ".env"
 DEFAULT_TTS_MODEL = "gemini-3.8-flash-lite-tts"
 DEFAULT_VOICE = "Kore"
 DEFAULT_SAMPLE_RATE = 24000  # Gemini TTS returns 16-bit mono PCM at 24 kHz
-STYLE_TEMPLATE = "Say in a {style} voice Only include the text between <start> and <end> in the output audio: <start>{text}<end>"
 
 LEAD_S = 0.3  # silence before a line starts inside its shot
 TAIL_PAD_S = 0.4  # breathing room after a line ends
@@ -150,13 +149,24 @@ def _check_audio(pcm: bytes, rate: int) -> None:
 
 
 def _build_prompt(text: str, style: str) -> str:
-    style = (style or "").strip()
-    return STYLE_TEMPLATE.format(style=style, text=text) if style else text
+    """Return only the words that should be spoken."""
+    return text.strip()
 
 
-def _cache_key(model: str, voice: str, prompt: str) -> str:
-    payload = {"stage": "narration", "model": model, "voice": voice, "prompt": prompt}
-    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+def _cache_key(model: str, voice: str, text: str, style: str) -> str:
+    payload = {
+        "stage": "narration",
+        "model": model,
+        "voice": voice,
+        "style": style,
+        "text": text,
+    }
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -169,18 +179,36 @@ def _is_fresh(wav: Path, meta: Path, key: str) -> bool:
         return False
 
 
-def _call_tts(client: genai.Client, model: str, voice: str, prompt: str) -> tuple[bytes, int, Any]:
-    """One API call. Returns (pcm, sample_rate, response) or raises."""
-    # Use the Interactions API which is the correct endpoint for Gemini TTS models
+def _call_tts(
+    client: genai.Client,
+    model: str,
+    voice: str,
+    text: str,
+    style: str,
+) -> tuple[bytes, int, Any]:
+    """One API call. Returns (pcm, sample_rate, response)."""
+
+    text_content = {
+        "type": "text",
+        "text": text.strip(),
+    }
+
+    if style.strip():
+        text_content["annotations"] = [
+            {
+                "type": "speech_metadata",
+                "style": style.strip(),
+            }
+        ]
+
     interaction = client.interactions.create(
         model=model,
-        input=[{
-            "type": "user_input",
-            "content": [{
-                "type": "text",
-                "text": prompt,
-            }],
-        }],
+        input=[
+            {
+                "type": "user_input",
+                "content": [text_content],
+            }
+        ],
         response_format={"type": "audio"},
         generation_config={
             "speech_config": [
@@ -188,17 +216,13 @@ def _call_tts(client: genai.Client, model: str, voice: str, prompt: str) -> tupl
             ]
         },
     )
-    
-    # The interactions API returns base64-encoded audio data
+
     audio_data = base64.b64decode(interaction.output_audio.data)
     mime_type = getattr(interaction.output_audio, "mime_type", "audio/wav")
-    
-    # Reuse your existing _to_pcm helper which already handles WAV headers correctly
+
     pcm, rate = _to_pcm(audio_data, mime_type)
     _check_audio(pcm, rate)
-    
-    # Return interaction instead of response; _synthesize_line safely uses getattr 
-    # for usage_metadata, so it will gracefully handle the different response object
+
     return pcm, rate, interaction
 
 
@@ -233,7 +257,13 @@ def _synthesize_line(
         }
         start = time.perf_counter()
         try:
-            pcm, rate, response = _call_tts(client, model, voice, prompt)
+            pcm, rate, response = _call_tts(
+                client,
+                model,
+                voice,
+                prompt,
+                style,
+            )
         except (genai_errors.APIError, BadAudioError) as exc:
             record.update(
                 success=False,
@@ -481,7 +511,7 @@ def run_narration(
     plan: list[dict[str, Any]] = []
     for line in lines:
         prompt = _build_prompt(line["text"], style)
-        key = _cache_key(model, voice, prompt)
+        key = _cache_key(model, voice, prompt, style)
         wav = out_dir / f"{line['id']}.wav"
         meta = out_dir / f"{line['id']}.wav.meta.json"
         fresh = _is_fresh(wav, meta, key)
