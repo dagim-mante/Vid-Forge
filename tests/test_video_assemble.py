@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -17,6 +18,34 @@ sys.path.insert(0, str(STAGE))
 from providers import HunyuanVideo15Provider, VideoRequest, Wan22Provider  # noqa: E402
 from video_cache import VideoCache, fingerprint  # noqa: E402
 import video_assemble  # noqa: E402
+
+
+class WorkerSetupTests(unittest.TestCase):
+    def test_dependencies_install_before_torch_and_wan_imports(self) -> None:
+        source = (STAGE / "video_worker.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        install_line = next(
+            node.lineno for node in ast.walk(main)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_install_wan_requirements"
+        )
+        torch_import_line = next(
+            node.lineno for node in ast.walk(main)
+            if isinstance(node, ast.Import) and any(alias.name == "torch" for alias in node.names)
+        )
+        wan_import_line = next(
+            node.lineno for node in ast.walk(main)
+            if isinstance(node, ast.Import) and any(alias.name == "wan" for alias in node.names)
+        )
+        checkpoint_download_line = next(
+            node.lineno for node in ast.walk(main)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "snapshot_download"
+        )
+        self.assertLess(install_line, torch_import_line)
+        self.assertLess(torch_import_line, wan_import_line)
+        self.assertLess(wan_import_line, checkpoint_download_line)
 
 
 def make_request(**changes: object) -> VideoRequest:

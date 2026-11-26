@@ -19,6 +19,28 @@ import assemble  # noqa: E402
 
 
 class AssemblyFilterTests(unittest.TestCase):
+    def test_title_end_card_credits_and_narration_subtitle_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            landscape_srt = root / "narration_16x9.srt"
+            portrait_srt = root / "narration_9x16.srt"
+            cue = "1\n00:00:00,100 --> 00:00:00,600\nSubtitle\n"
+            landscape_srt.write_text(cue, encoding="utf-8")
+            portrait_srt.write_text(cue, encoding="utf-8")
+            assets = assemble._write_card_assets(root, {
+                "title": "Film title", "end_card_s": 4.0,
+                "end_card_text": "Made with AI", "credits": "Directed by someone",
+                "subtitles_path": landscape_srt,
+                "subtitles_portrait_path": portrait_srt,
+            }, 3.0)
+            self.assertIn("Film title", assets["title"].read_text(encoding="utf-8"))
+            self.assertIn("Made with AI", assets["end_card"].read_text(encoding="utf-8"))
+            self.assertIn("Directed by someone", assets["credits"].read_text(encoding="utf-8"))
+            shifted = assets["subtitles_16x9"].read_text(encoding="utf-8")
+            self.assertIn("00:00:03,100 --> 00:00:03,600", shifted)
+            for path in assets.values():
+                path.unlink(missing_ok=True)
+
     def test_hard_cut_filter_graph_concatenates_in_input_order(self) -> None:
         graph, label = assemble.build_filter_graph(3, 24, [2.0, 3.0, 4.0], "cut", 0.5)
         self.assertEqual(label, "vout")
@@ -39,6 +61,15 @@ class AssemblyFilterTests(unittest.TestCase):
         )
         self.assertIn("scale=720:1280", graph)
         self.assertIn("color=c=black:s=720x1280", graph)
+
+    def test_graph_keeps_missing_shot_slot_as_black_with_timeline_duration(self) -> None:
+        graph, _ = assemble.build_filter_graph(
+            3, 24, [2.0, 3.0, 4.0], "cut", 0.5,
+            input_indexes=[0, None, 1],
+        )
+        self.assertIn("color=c=black:s=1280x720:r=24:d=3.000000", graph)
+        self.assertIn("[0:v:0]", graph)
+        self.assertIn("[1:v:0]", graph)
 
     def test_duration_calculation_counts_overlaps(self) -> None:
         self.assertEqual(assemble.calculate_duration([5.0, 6.0, 7.0], "cut", 0.5), 18.0)
@@ -62,7 +93,8 @@ class AssemblyProjectTests(unittest.TestCase):
         self.shot_dir.mkdir(parents=True)
         self.shot_ids = ["shot_02", "shot_01"]  # deliberately not alphabetical
         (self.production / "storyboard.json").write_text(json.dumps({
-            "meta": {"fps": 24},
+            "meta": {"fps": 24, "title": "Sample film title"},
+            "end_card": {"text": "Made with AI", "credits": "Directed by Sample", "duration_s": 0.5},
             "shots": [{"id": shot_id, "duration_s": 1} for shot_id in self.shot_ids],
         }), encoding="utf-8")
         for shot_id in self.shot_ids:
@@ -88,7 +120,7 @@ class AssemblyProjectTests(unittest.TestCase):
             "file_size": 2048,
         }
         self.final_info = {
-            "duration_s": 3.5, "width": 1280, "height": 720, "fps": 24.0,
+            "duration_s": 6.5, "width": 1280, "height": 720, "fps": 24.0,
             "codec": "h264", "pixel_format": "yuv420p", "audio_stream_count": 1,
             "file_size": 4096,
         }
@@ -113,12 +145,12 @@ class AssemblyProjectTests(unittest.TestCase):
             report = assemble.assemble_project(self.project, dry_run=True)
         self.assertEqual(report["shot_ids"], ["shot_02", "shot_01"])
         self.assertEqual(report["available_clip_count"], 2)
-        self.assertEqual(report["estimated_final_duration_s"], 3.5)
+        self.assertEqual(report["estimated_final_duration_s"], 6.5)
         self.assertLess(stdout.getvalue().index("shot_02: 2.000s"), stdout.getvalue().index("shot_01: 2.000s"))
         self.assertFalse((self.production / "final.mp4").exists())
         self.assertFalse((self.production / "assembly_manifest.json").exists())
 
-    def test_reports_every_missing_clip_and_stops_before_render(self) -> None:
+    def test_missing_clips_are_reported_and_dry_run_uses_placeholders(self) -> None:
         timing_path = self.project / "outputs" / "narration" / "timing.json"
         (self.production / "storyboard.json").write_text(json.dumps({
             "meta": {"fps": 24}, "shots": [{"id": "shot_02"}, {"id": "shot_01"}, {"id": "shot_03"}],
@@ -132,11 +164,38 @@ class AssemblyProjectTests(unittest.TestCase):
         stderr = io.StringIO()
         tools = self._patch_tools()
         with tools[0], tools[1], patch.object(assemble, "inspect_clip", return_value=self.info), \
-             patch.object(assemble, "_run_ffmpeg", side_effect=AssertionError("missing clips rendered")), \
-             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
-             self.assertRaisesRegex(ValueError, "missing or invalid"):
-            assemble.assemble_project(self.project)
+             patch.object(assemble, "_run_ffmpeg", side_effect=AssertionError("dry run rendered")), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            report = assemble.assemble_project(self.project, dry_run=True)
         self.assertIn("shot_02, shot_03", stderr.getvalue())
+        self.assertEqual(report["missing_shots"], ["shot_02", "shot_03"])
+        self.assertEqual(report["valid_clip_count"], 1)
+        self.assertEqual(report["estimated_final_duration_s"], 8.0)
+        self.assertIn("black placeholders for 2 missing shot(s)", stdout.getvalue())
+
+    def test_render_continues_with_available_clips_and_black_missing_slots(self) -> None:
+        (self.shot_dir / "shot_02.mp4").unlink()
+        graphs: list[str] = []
+
+        def render(command: list[str], **_kwargs: object) -> None:
+            graphs.append(command[command.index("-filter_complex") + 1])
+            Path(command[-1]).write_bytes(b"assembled partial film" * 30)
+
+        def inspect(path: Path, _ffprobe: str, _ffmpeg: str, **_kwargs: object):
+            return self.portrait_info if path.name.startswith(".final_9x16.") else self.final_info
+
+        tools = self._patch_tools()
+        with tools[0], tools[1], patch.object(assemble, "inspect_clip", side_effect=inspect), \
+             patch.object(assemble, "_run_ffmpeg", side_effect=render):
+            report = assemble.assemble_project(self.project)
+
+        self.assertEqual(report["missing_shots"], ["shot_02"])
+        self.assertEqual(len(graphs), 2)
+        self.assertIn("color=c=black:s=1280x720:r=24:d=1.500000", graphs[0])
+        self.assertIn("color=c=black:s=720x1280:r=24:d=1.500000", graphs[1])
+        manifest = json.loads((self.production / "assembly_manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["missing_shot_ids"], ["shot_02"])
+        self.assertEqual(manifest["ordered_shot_ids"], self.shot_ids)
 
     def test_reports_invalid_clip_and_checks_remaining_inputs(self) -> None:
         checked: list[str] = []
@@ -150,7 +209,7 @@ class AssemblyProjectTests(unittest.TestCase):
         stderr = io.StringIO()
         tools = self._patch_tools()
         with tools[0], tools[1], patch.object(assemble, "inspect_clip", side_effect=inspect), \
-             contextlib.redirect_stderr(stderr), self.assertRaisesRegex(ValueError, "missing or invalid"):
+             contextlib.redirect_stderr(stderr), self.assertRaisesRegex(ValueError, "present storyboard clips are invalid"):
             assemble.assemble_project(self.project)
         self.assertEqual(checked, ["shot_02.mp4", "shot_01.mp4"])
         self.assertIn("shot_02", stderr.getvalue())
@@ -202,15 +261,25 @@ class AssemblyProjectTests(unittest.TestCase):
         self.assertIn("+faststart", rendered_command)
         self.assertIn("[afinal]", rendered_command[rendered_command.index("-filter_complex") + 1])
         self.assertIn("[vfinal]", rendered_command[rendered_command.index("-filter_complex") + 1])
+        self.assertIn("[titlecard]", rendered_command[rendered_command.index("-filter_complex") + 1])
+        self.assertIn("[endcardtitle]", rendered_command[rendered_command.index("-filter_complex") + 1])
+        self.assertIn("[vendcard]", rendered_command[rendered_command.index("-filter_complex") + 1])
+        self.assertIn("setparams=range=limited[vfinal]", rendered_command[rendered_command.index("-filter_complex") + 1])
+        self.assertIn("-color_range", rendered_command)
+        self.assertIn("tv", rendered_command)
+        self.assertIn("-itsoffset", rendered_command)
+        self.assertIn("3.000", rendered_command)
         self.assertIn(str(self.project / "outputs" / "narration" / "voice_track.wav"), rendered_command)
         self.assertIn("scale=720:1280", portrait_command[portrait_command.index("-filter_complex") + 1])
-        self.assertIn("narration_9x16.srt", portrait_command[portrait_command.index("-filter_complex") + 1])
-        self.assertEqual(report["actual_final_duration_s"], 3.5)
+        self.assertIn(".assembly-narration-9x16-", portrait_command[portrait_command.index("-filter_complex") + 1])
+        self.assertEqual(report["actual_final_duration_s"], 6.5)
         self.assertNotEqual(output.read_bytes(), b"old final")
         portrait = self.production / "final_9x16.mp4"
         self.assertTrue(portrait.is_file())
         manifest = json.loads((self.production / "assembly_manifest.json").read_text(encoding="utf-8"))
         self.assertEqual(manifest["ordered_shot_ids"], self.shot_ids)
+        self.assertEqual(manifest["opening_title_card"]["text"], "Sample film title")
+        self.assertEqual(manifest["end_card"]["credits"], "Directed by Sample")
         self.assertEqual(manifest["transition"]["type"], "crossfade")
         self.assertEqual(manifest["outputs"]["16x9"]["codec"], "h264")
         self.assertEqual(manifest["outputs"]["9x16"]["width"], 720)
@@ -350,7 +419,7 @@ class AssemblyIntegrationTests(unittest.TestCase):
             )
             self.assertTrue((project / "production" / "final.mp4").is_file())
             self.assertTrue((project / "production" / "final_9x16.mp4").is_file())
-            self.assertAlmostEqual(report["actual_final_duration_s"], 1.8, delta=1.0 / 24)
+            self.assertAlmostEqual(report["actual_final_duration_s"], 4.8, delta=1.0 / 24)
             self.assertTrue((project / "production" / "assembly_manifest.json").is_file())
 
 

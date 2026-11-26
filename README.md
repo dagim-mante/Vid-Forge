@@ -2,7 +2,7 @@
 
 Vid-Forge is a staged AI filmmaking pipeline. It keeps storyboard creation, candidate keyframes, per-shot video generation, narration, music, and final film assembly as separate steps.
 
-The `video` stage reads selected keyframes and writes individual clips to `projects/<project>/outputs/shots/`. Run `narration` to create the timed voice track and subtitles, then `assemble` combines the shots in storyboard order with that audio and burned-in subtitles into landscape 1280x720 and portrait 720x1280 final films.
+The `video` stage reads selected keyframes and writes individual clips to `projects/<project>/outputs/shots/`. Run `narration` to create the timed voice track and subtitles, then `assemble` adds the storyboard title and credits, combines available shots in order, and writes landscape 1280x720 and portrait 720x1280 films. Missing shot clips appear as black intervals so narration timing stays aligned.
 
 ```powershell
 vid-forge video project=tibeb --dry-run

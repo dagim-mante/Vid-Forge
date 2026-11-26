@@ -98,15 +98,6 @@ def _install_wan_requirements(requirements: Path) -> None:
 
 def main() -> int:
     try:
-        import torch
-        from PIL import Image
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is unavailable; check that the Kaggle kernel has a GPU accelerator.")
-        props = torch.cuda.get_device_properties(0)
-        gpu = {"name": props.name, "total_memory_bytes": int(props.total_memory),
-               "free_memory_bytes": int(torch.cuda.mem_get_info(0)[0])}
-        print("GPU:", json.dumps(gpu))
-
         bundle = _find_jobs_manifest()
         data = json.loads(bundle.read_text(encoding="utf-8"))
         jobs = data["jobs"]
@@ -118,8 +109,37 @@ def main() -> int:
         subprocess.run(["git", "-C", str(REPO), "checkout", revision], check=True)
         _install_wan_requirements(REPO / "requirements.txt")
         _pip_install("huggingface_hub")
-        from huggingface_hub import snapshot_download
+
+        # Wan's requirements can replace NumPy and related compiled packages.
+        # Importing torch before pip runs leaves this process holding modules
+        # from the previous NumPy installation, which can cause ABI errors
+        # later when diffusers lazily imports numpy.random.
+        import numpy
+        import torch
+        from PIL import Image
+
+        if int(numpy.__version__.split(".", 1)[0]) >= 2:
+            raise RuntimeError(
+                f"Wan's pinned requirements expect NumPy <2, but NumPy {numpy.__version__} is active. "
+                "Check the dependency installation output before retrying the Kaggle job."
+            )
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is unavailable; check that the Kaggle kernel has a GPU accelerator.")
+        props = torch.cuda.get_device_properties(0)
+        gpu = {"name": props.name, "total_memory_bytes": int(props.total_memory),
+               "free_memory_bytes": int(torch.cuda.mem_get_info(0)[0])}
+        print("Runtime:", json.dumps({"python": sys.version.split()[0], "numpy": numpy.__version__,
+                                     "torch": torch.__version__}), flush=True)
+        print("GPU:", json.dumps(gpu), flush=True)
+
+        # Import the full inference stack before fetching multi-gigabyte weights
+        # so dependency/import problems fail quickly and are reported clearly.
         sys.path.insert(0, str(REPO))
+        import wan
+        from wan.configs import WAN_CONFIGS
+        from wan.utils.utils import save_video
+
+        from huggingface_hub import snapshot_download
         checkpoint_dir = SCRATCH / "Wan2.2-TI2V-5B"
         print(f"Downloading model checkpoint to scratch storage: {checkpoint_dir}", flush=True)
         checkpoint = snapshot_download(
@@ -127,9 +147,6 @@ def main() -> int:
             revision=data.get("model_revision") or None,
             local_dir=str(checkpoint_dir),
         )
-        import wan
-        from wan.configs import WAN_CONFIGS
-        from wan.utils.utils import save_video
         config = WAN_CONFIGS["ti2v-5B"]
         # Official Wan code uses T5 on CPU and low-memory model conversion for a single GPU.
         pipeline = wan.WanTI2V(config=config, checkpoint_dir=checkpoint, device_id=0, rank=0,

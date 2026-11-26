@@ -12,6 +12,8 @@ This stage renders one MP4 per storyboard shot under `projects/<name>/outputs/sh
 
 The first GPU run creates or updates a private Kaggle Dataset with the selected images and full requests, then creates or updates a private GPU Kernel. The worker clones the official [Wan 2.2 repository](https://github.com/Wan-Video/Wan2.2) at code revision `1ea34ff`, installs its runtime requirements, downloads the pinned official `Wan-AI/Wan2.2-TI2V-5B` model revision to Kaggle's temporary scratch storage (`/kaggle/tmp`), initializes the model once, then generates every cache-missing i2v shot in the submitted batch. It skips the optional `flash_attn` source build and uses Wan's PyTorch SDPA fallback. The model weights are not uploaded with the job bundle or saved as notebook output. The first run can take a while because it installs dependencies and downloads the model. Model download and inference require Kaggle internet access and sufficient scratch space. Kaggle removes scratch files between kernel runs, so batching amortizes the model download and load across shots in a run.
 
+The worker installs dependencies before importing PyTorch, NumPy, or Wan. This avoids keeping already-imported compiled modules in memory while pip replaces their NumPy dependency. It imports the Wan/diffusers runtime before downloading model weights, so import and ABI errors fail during setup rather than after the large checkpoint download.
+
 The Wan path uses the official TI2V input-image workflow, model seed, negative prompt (`n_prompt`), and 4n+1 frame count. Requests use 1280x704 landscape generation for a 16:9 selected keyframe, then normalize to 1280x720 H.264/yuv420p at the storyboard FPS. The requested duration is approximated by the closest supported frame count and the actual duration is recorded.
 
 ## Commands
@@ -53,4 +55,4 @@ If authentication fails, check the Kaggle username slug and API token in `.env`,
 - The current development environment has no Kaggle CLI, FFmpeg, or ffprobe installed, so a real Kaggle run and local media decode cannot be validated here. The first external GPU test is still required.
 - Wan weights are fetched inside the worker at the pinned Hugging Face revision. Kaggle internet, execution quota, and disk limits can block setup.
 - Hunyuan is not an active provider until its official image-to-video worker is implemented and validated.
-- This stage targets landscape 16:9 output (1280x720); storyboard `aspect_ratios` is not yet a per-output rendition selector.
+- This stage generates landscape per-shot clips (1280x720); final assembly also creates a portrait 9:16 rendition (720x1280).

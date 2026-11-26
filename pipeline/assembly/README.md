@@ -27,7 +27,7 @@ projects/<project>/production/final_9x16.mp4
 projects/<project>/production/assembly_manifest.json
 ```
 
-The stage checks every expected shot file, probes its video stream, and fully decodes it before rendering. Missing or invalid clips stop assembly and are reported by shot ID. It does not use filesystem glob order.
+The stage checks every present shot file, probes its video stream, and fully decodes it before rendering. Missing clips are reported and replaced by black intervals of the same planned duration, so available shots can still be assembled without shifting narration or subtitles. Invalid present clips stop rendering; at least one valid shot clip is required. Storyboard order is preserved and filesystem glob order is never used.
 
 ## Usage
 
@@ -41,7 +41,7 @@ vid-forge assemble project=tibeb --output final-v2.mp4
 vid-forge assemble project=tibeb --force
 ```
 
-Run `vid-forge narration project=<project>` first. Assembly uses its saved timing plan and voice track, burns in the matching 16:9 or 9:16 English subtitles, and mixes the radio cut's placeholder music under the narration. The timing file is authoritative for shot lengths; clips are trimmed or held on their last frame to match. Its end-card duration is appended as black video. Both final runtimes match `timing.json`.
+Run `vid-forge narration project=<project>` first. Assembly shows `meta.title` on a 3-second opening title card, then uses the saved timing plan and voice track, burns in the matching 16:9 or 9:16 English subtitles, and mixes the radio cut's placeholder music under the narration. Missing shots become black intervals; present clips are trimmed or held on their last frame to match the timing file. The end card shows `end_card.text` and optional `end_card.credits`. Narration and subtitles are shifted to follow the opening card. Both final runtimes equal `timing.json` plus the 3-second title card.
 
 Each run writes both `production/final.mp4` (1280x720) and `production/final_9x16.mp4` (720x1280). With `--output final-v2.mp4`, the portrait file is named `final-v2_9x16.mp4`. Both videos use the same audio and shot timing, with independently cropped framing and aspect-specific subtitles.
 
@@ -51,7 +51,7 @@ All clips are normalized with an aspect-ratio-preserving scale and center crop t
 
 ## Dry run and replacement
 
-`--dry-run` probes and fully decodes each input, then reports storyboard order, clip durations and dimensions, missing/invalid clips, narration timing, both target formats and output paths. It does not render or write the manifest.
+`--dry-run` probes and fully decodes each present input, then reports storyboard order, clip durations and dimensions, missing/invalid clips, placeholder intervals, narration timing, title/end-card text, both target formats and output paths. It does not render or write the manifest.
 
 Both existing outputs are protected. Use `--force` to replace them. Vid-Forge renders both to temporary MP4 files in `production/`, validates codec, dimensions, FPS, pixel format, duration, and a full decode for each, then replaces the final files. A failed render or validation leaves previous outputs untouched. Temporary files are removed after failures.
 

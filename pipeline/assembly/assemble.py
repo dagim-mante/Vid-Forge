@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import importlib
 import json
 import math
@@ -23,6 +24,7 @@ OUTPUT_CONTAINER = "mp4"
 DEFAULT_OUTPUT_NAME = "final.mp4"
 DEFAULT_TRANSITION = "cut"
 DEFAULT_TRANSITION_DURATION = 0.5
+TITLE_CARD_SECONDS = 3.0
 TRANSITION_FILTERS = {"crossfade": "fade"}
 OUTPUT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*\.mp4$")
 SHOT_ID_PATTERN = re.compile(r"^shot_[0-9]{2,3}$")
@@ -159,7 +161,9 @@ def _validate_storyboard_file(path: Path, project_dir: Path) -> None:
         raise ValueError("storyboard validation failed:\n" + report.format())
 
 
-def _narration_inputs(project_dir: Path, shots: list[dict[str, Any]]) -> dict[str, Any]:
+def _narration_inputs(
+    project_dir: Path, storyboard: dict[str, Any], shots: list[dict[str, Any]],
+) -> dict[str, Any]:
     narration_dir = project_dir / "outputs" / "narration"
     timing_path = narration_dir / "timing.json"
     voice_path = narration_dir / "voice_track.wav"
@@ -189,11 +193,17 @@ def _narration_inputs(project_dir: Path, shots: list[dict[str, Any]]) -> dict[st
     calculated = sum(durations.values()) + end_card_s
     if abs(calculated - total_s) > 0.05:
         raise ValueError(f"narration timing total ({total_s:.3f}s) does not match shot and end-card durations ({calculated:.3f}s)")
+    meta = storyboard.get("meta") if isinstance(storyboard.get("meta"), dict) else {}
+    end_card = storyboard.get("end_card") if isinstance(storyboard.get("end_card"), dict) else {}
+    title = str(meta.get("title") or project_dir.name)
+    end_card_text = str(end_card.get("text") or "Made with AI")
+    credits = str(end_card.get("credits") or "")
     return {
         "timing": timing, "timing_path": timing_path, "shot_durations": durations,
         "total_s": total_s, "end_card_s": end_card_s, "voice_path": voice_path,
         "subtitles_path": subtitles_path, "subtitles_portrait_path": subtitles_portrait_path,
-        "music_path": music_path,
+        "music_path": music_path, "title": title, "end_card_text": end_card_text,
+        "credits": credits,
     }
 
 
@@ -270,19 +280,36 @@ def build_filter_graph(
     end_card_duration: float = 0.0,
     width: int = OUTPUT_WIDTH,
     height: int = OUTPUT_HEIGHT,
+    input_indexes: list[int | None] | None = None,
+    title_card_duration: float = 0.0,
+    title_srt: Path | None = None,
+    end_card_srt: Path | None = None,
+    credits_srt: Path | None = None,
 ) -> tuple[str, str]:
     if clip_count < 1 or len(durations) != clip_count:
-        raise ValueError("filter graph needs one duration for each input clip")
+        raise ValueError("filter graph needs one duration for each storyboard shot")
+    if input_indexes is None:
+        input_indexes = list(range(clip_count))
+    if len(input_indexes) != clip_count:
+        raise ValueError("filter graph needs one input mapping for each storyboard shot")
     _validate_transition(transition, transition_duration, durations)
     filters: list[str] = []
     for index in range(clip_count):
         duration = durations[index]
-        filters.append(
-            f"[{index}:v:0]scale={width}:{height}:force_original_aspect_ratio=increase,"
-            f"crop={width}:{height},fps={fps},setsar=1,format={OUTPUT_PIXEL_FORMAT},"
-            f"tpad=stop_mode=clone:stop_duration={duration:.6f},trim=duration={duration:.6f},"
-            f"settb=AVTB,setpts=PTS-STARTPTS[v{index}]"
-        )
+        input_index = input_indexes[index]
+        if input_index is None:
+            filters.append(
+                f"color=c=black:s={width}x{height}:r={fps}:d={duration:.6f},"
+                f"format={OUTPUT_PIXEL_FORMAT},setparams=range=limited,setsar=1,"
+                f"settb=AVTB,setpts=PTS-STARTPTS[v{index}]"
+            )
+        else:
+            filters.append(
+                f"[{input_index}:v:0]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height},fps={fps},setsar=1,format={OUTPUT_PIXEL_FORMAT},setparams=range=limited,"
+                f"tpad=stop_mode=clone:stop_duration={duration:.6f},trim=duration={duration:.6f},"
+                f"settb=AVTB,setpts=PTS-STARTPTS[v{index}]"
+            )
         if transition == "crossfade" and index < clip_count - 1:
             filters[-1] = filters[-1].replace(
                 f"[v{index}]", f"[v{index}_base]", 1
@@ -306,14 +333,57 @@ def build_filter_graph(
             current = output_label
         filters.append(f"[{current}]null[vshots]")
 
+    segments: list[str] = []
+    if title_card_duration > 0:
+        title_fontsize = 36 if width > height else 30
+        filters.append(
+            f"color=c=black:s={width}x{height}:r={fps}:d={title_card_duration:.6f},"
+            f"format={OUTPUT_PIXEL_FORMAT},setparams=range=limited,setsar=1,"
+            f"settb=AVTB,setpts=PTS-STARTPTS[titlebase]"
+        )
+        if title_srt is not None:
+            filters.append(
+                f"[titlebase]subtitles='{_subtitle_filter_path(title_srt)}':"
+                f"force_style='Fontsize={title_fontsize},Fontname=Arial,PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=5'[titlecard]"
+            )
+        else:
+            filters.append("[titlebase]null[titlecard]")
+        segments.append("[titlecard]")
+    segments.append("[vshots]")
+
     if end_card_duration > 0:
         filters.append(
             f"color=c=black:s={width}x{height}:r={fps}:d={end_card_duration:.6f},"
-            f"format={OUTPUT_PIXEL_FORMAT},setsar=1[vendcard]"
+            f"format={OUTPUT_PIXEL_FORMAT},setparams=range=limited,setsar=1,"
+            f"settb=AVTB,setpts=PTS-STARTPTS[endcardbase]"
         )
-        filters.append("[vshots][vendcard]concat=n=2:v=1:a=0[vout]")
+        current_card = "endcardbase"
+        if end_card_srt is not None:
+            card_fontsize = 32 if width > height else 28
+            filters.append(
+                f"[{current_card}]subtitles='{_subtitle_filter_path(end_card_srt)}':"
+                f"force_style='Fontsize={card_fontsize},Fontname=Arial,PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=5'[endcardtitle]"
+            )
+            current_card = "endcardtitle"
+        if credits_srt is not None:
+            credits_fontsize = 20 if width > height else 18
+            filters.append(
+                f"[{current_card}]subtitles='{_subtitle_filter_path(credits_srt)}':"
+                f"force_style='Fontsize={credits_fontsize},Fontname=Arial,PrimaryColour=&H00FFFFFF,"
+                "OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=2,MarginV=42'[vendcard]"
+            )
+            current_card = "vendcard"
+        elif current_card == "endcardbase":
+            filters.append("[endcardbase]null[vendcard]")
+            current_card = "vendcard"
+        segments.append(f"[{current_card}]")
+
+    if len(segments) == 1:
+        filters.append(f"{segments[0]}null[vout]")
     else:
-        filters.append("[vshots]null[vout]")
+        filters.append(f"{''.join(segments)}concat=n={len(segments)}:v=1:a=0[vout]")
     return ";".join(filters), "vout"
 
 
@@ -336,6 +406,66 @@ def _radio_cut_module():
 
 def _subtitle_filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+
+
+def _srt_timestamp(milliseconds: int) -> str:
+    milliseconds = max(0, milliseconds)
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, millis = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def _shift_srt(source: Path, destination: Path, offset_s: float) -> None:
+    stamp = re.compile(r"(?m)^(\d{2,}:\d{2}:\d{2},\d{3}) --> (\d{2,}:\d{2}:\d{2},\d{3})$")
+
+    def shifted(match: re.Match[str]) -> str:
+        def to_ms(value: str) -> int:
+            hours, minutes, rest = value.split(":")
+            seconds, millis = rest.split(",")
+            return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int(millis)
+
+        offset_ms = int(round(offset_s * 1000))
+        return f"{_srt_timestamp(to_ms(match.group(1)) + offset_ms)} --> {_srt_timestamp(to_ms(match.group(2)) + offset_ms)}"
+
+    content = source.read_text(encoding="utf-8-sig")
+    destination.write_text(stamp.sub(shifted, content), encoding="utf-8")
+
+
+def _card_srt(text: str, start_s: float, end_s: float) -> str:
+    safe_text = html.escape(text.strip().replace("\r\n", "\n").replace("\r", "\n"))
+    return f"1\n{_srt_timestamp(round(start_s * 1000))} --> {_srt_timestamp(round(end_s * 1000))}\n{safe_text}\n\n"
+
+
+def _write_card_assets(
+    production: Path, narration: dict[str, Any], intro_duration: float,
+) -> dict[str, Path]:
+    token = uuid.uuid4().hex
+    assets = {
+        "title": production / f".assembly-title-{token}.srt",
+        "end_card": production / f".assembly-endcard-{token}.srt",
+        "credits": production / f".assembly-credits-{token}.srt",
+        "subtitles_16x9": production / f".assembly-narration-16x9-{token}.srt",
+        "subtitles_9x16": production / f".assembly-narration-9x16-{token}.srt",
+    }
+    assets["title"].write_text(
+        _card_srt(narration["title"], 0.25, max(0.26, intro_duration - 0.25)), encoding="utf-8",
+    )
+    card_duration = narration["end_card_s"]
+    title_end = max(0.3, card_duration - (0.9 if narration["credits"] else 0.25))
+    assets["end_card"].write_text(
+        _card_srt(narration["end_card_text"], 0.2, title_end), encoding="utf-8",
+    )
+    if narration["credits"]:
+        assets["credits"].write_text(
+            _card_srt(narration["credits"], title_end, max(title_end + 0.1, card_duration - 0.15)),
+            encoding="utf-8",
+        )
+    else:
+        assets.pop("credits")
+    _shift_srt(narration["subtitles_path"], assets["subtitles_16x9"], intro_duration)
+    _shift_srt(narration["subtitles_portrait_path"], assets["subtitles_9x16"], intro_duration)
+    return assets
 
 
 def _validate_final(
@@ -375,8 +505,8 @@ def assemble_project(
     if not project_dir.is_dir():
         raise ValueError(f"Project directory does not exist: {project_dir}")
     ffmpeg, ffprobe = ffmpeg_path(), ffprobe_path()
-    _, shots, fps = _storyboard(project_dir)
-    narration = _narration_inputs(project_dir, shots)
+    storyboard, shots, fps = _storyboard(project_dir)
+    narration = _narration_inputs(project_dir, storyboard, shots)
     output_paths = _output_paths(project_dir, output_name)
     output = output_paths["16x9"]
     existing_outputs = [path for path in output_paths.values() if path.exists()]
@@ -398,7 +528,7 @@ def assemble_project(
 
     timeline_durations = [narration["shot_durations"][shot["id"]] for shot in shots]
     _validate_transition(transition, transition_duration, timeline_durations if not missing and not invalid else [])
-    estimated = narration["total_s"]
+    estimated = narration["total_s"] + TITLE_CARD_SECONDS
     report: dict[str, Any] = {
         "project": project_dir.name,
         "shot_ids": [shot["id"] for shot in shots],
@@ -416,13 +546,17 @@ def assemble_project(
         },
         "transition": transition,
         "transition_duration_s": transition_duration,
-        "estimated_final_duration_s": estimated if not missing and not invalid else None,
+        "estimated_final_duration_s": estimated if not invalid and clips else None,
         "narration_timing_path": str(narration["timing_path"]),
         "voice_track_path": str(narration["voice_path"]),
         "subtitles_path": str(narration["subtitles_path"]),
         "portrait_subtitles_path": str(narration["subtitles_portrait_path"]),
         "placeholder_music_path": str(narration["music_path"]),
         "end_card_duration_s": narration["end_card_s"],
+        "title_card_duration_s": TITLE_CARD_SECONDS,
+        "title": narration["title"],
+        "end_card_text": narration["end_card_text"],
+        "credits": narration["credits"],
         "output_path": str(output),
         "portrait_output_path": str(output_paths["9x16"]),
         "output_paths": {aspect: str(path) for aspect, path in output_paths.items()},
@@ -433,6 +567,7 @@ def assemble_project(
     print(f"Assembly plan for {project_dir.name}: {len(shots)} storyboard shot(s), {len(clips)} available clip(s).")
     print(f"Targets: {OUTPUT_WIDTH}x{OUTPUT_HEIGHT} (16:9) and {OUTPUT_HEIGHT}x{OUTPUT_WIDTH} (9:16) at {fps} fps, H.264/{OUTPUT_PIXEL_FORMAT}; transition={transition}.")
     print(f"Narration timeline: {narration['total_s']:.3f}s; subtitles will be burned in; end card: {narration['end_card_s']:.3f}s.")
+    print(f"Opening title card: {narration['title']} ({TITLE_CARD_SECONDS:.1f}s); end card: {narration['end_card_text']}")
     music_state = "present" if narration["music_path"].is_file() else "will be generated during render"
     print(
         f"Audio: {narration['voice_path']} + {narration['music_path']} ({music_state}); "
@@ -445,21 +580,32 @@ def assemble_project(
         print(f"Invalid clip {item['shot_id']} ({item['path']}): {item['error']}", file=sys.stderr)
     for clip in clips:
         print(f"  {clip['shot_id']}: {clip['duration_s']:.3f}s, {clip['width']}x{clip['height']} at {clip['fps']:.3f} fps")
-    if not missing and not invalid:
-        print(f"Estimated final duration: {estimated:.3f}s")
+    if not invalid and clips:
+        suffix = f"; black placeholders for {len(missing)} missing shot(s)" if missing else ""
+        print(f"Estimated final duration: {estimated:.3f}s{suffix}")
     else:
-        print("Estimated final duration: unavailable until every storyboard clip is valid.")
+        print("Estimated final duration: unavailable until at least one valid shot clip is available.")
     if existing_outputs and not force:
         print("Output(s) already exist; pass --force to replace both: " + ", ".join(str(path) for path in existing_outputs), file=sys.stderr)
-    if missing or invalid:
-        raise ValueError("assembly stopped because one or more storyboard shots are missing or invalid")
+    if invalid:
+        raise ValueError("assembly stopped because one or more present storyboard clips are invalid")
+    if not clips:
+        raise ValueError("assembly needs at least one valid shot clip; no storyboard shot videos were found")
     if existing_outputs and not force and not dry_run:
         raise FileExistsError("Refusing to overwrite existing output(s) without --force: " + ", ".join(str(path) for path in existing_outputs))
     if dry_run:
         print("Dry run complete; no video or manifest was changed.")
         return report
 
-    durations = [narration["shot_durations"][clip["shot_id"]] for clip in clips]
+    durations = [narration["shot_durations"][shot["id"]] for shot in shots]
+    input_indexes: list[int | None] = []
+    clip_index = 0
+    for shot in shots:
+        if any(clip["shot_id"] == shot["id"] for clip in clips):
+            input_indexes.append(clip_index)
+            clip_index += 1
+        else:
+            input_indexes.append(None)
     radio_cut = _radio_cut_module()
     music_path = narration["music_path"]
     if not music_path.is_file():
@@ -468,6 +614,7 @@ def assemble_project(
     voice_index = len(clips)
     music_index = voice_index + 1
     output.parent.mkdir(parents=True, exist_ok=True)
+    card_assets = _write_card_assets(output.parent, narration, TITLE_CARD_SECONDS)
     temporary_paths = {
         aspect: path.with_name(f".{path.stem}.{uuid.uuid4().hex}.tmp.mp4")
         for aspect, path in output_paths.items()
@@ -475,30 +622,38 @@ def assemble_project(
     commands: dict[str, list[str]] = {}
     filter_graphs: dict[str, str] = {}
     for aspect, (width, height, subtitles_path) in {
-        "16x9": (OUTPUT_WIDTH, OUTPUT_HEIGHT, narration["subtitles_path"]),
-        "9x16": (OUTPUT_HEIGHT, OUTPUT_WIDTH, narration["subtitles_portrait_path"]),
+        "16x9": (OUTPUT_WIDTH, OUTPUT_HEIGHT, card_assets["subtitles_16x9"]),
+        "9x16": (OUTPUT_HEIGHT, OUTPUT_WIDTH, card_assets["subtitles_9x16"]),
     }.items():
         filter_graph, _ = build_filter_graph(
-            len(clips), fps, durations, transition, transition_duration,
+            len(shots), fps, durations, transition, transition_duration,
             narration["end_card_s"], width=width, height=height,
+            input_indexes=input_indexes,
+            title_card_duration=TITLE_CARD_SECONDS,
+            title_srt=card_assets["title"], end_card_srt=card_assets["end_card"],
+            credits_srt=card_assets.get("credits"),
         )
         escaped_subtitles = _subtitle_filter_path(subtitles_path)
+        narration_fontsize = 24 if width > height else 20
         filter_graph += (
-            f";[vout]subtitles='{escaped_subtitles}':force_style='Fontsize=24,Fontname=Arial,"
-            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1'[vfinal]"
+            f";[vout]subtitles='{escaped_subtitles}':force_style='Fontsize={narration_fontsize},Fontname=Arial,"
+            "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1'[vsubtitled]"
+            f";[vsubtitled]scale=iw:ih:in_range=auto:out_range=limited,format={OUTPUT_PIXEL_FORMAT},"
+            "setparams=range=limited[vfinal]"
             f";{radio_cut._mix_graph(voice_index, music_index)};[mix]{loudnorm},atrim=duration={estimated:.6f},"
             "asetpts=PTS-STARTPTS[afinal]"
         )
         command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
         for clip in clips:
             command += ["-i", str(clip["path"])]
-        command += ["-i", str(narration["voice_path"]), "-stream_loop", "-1", "-i", str(music_path)]
+        command += ["-itsoffset", f"{TITLE_CARD_SECONDS:.3f}", "-i", str(narration["voice_path"]),
+                    "-stream_loop", "-1", "-i", str(music_path)]
         command += [
             "-filter_complex", filter_graph,
             "-map", "[vfinal]", "-map", "[afinal]",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18",
             "-c:a", "aac", "-b:a", "160k",
-            "-pix_fmt", OUTPUT_PIXEL_FORMAT, "-r", str(fps),
+            "-pix_fmt", OUTPUT_PIXEL_FORMAT, "-color_range", "tv", "-r", str(fps),
             "-t", f"{estimated:.6f}",
             "-movflags", "+faststart", str(temporary_paths[aspect]),
         ]
@@ -524,7 +679,13 @@ def assemble_project(
             "project": project_dir.name,
             "created_at": utc_now(),
             "status": "completed",
-            "ordered_shot_ids": [clip["shot_id"] for clip in clips],
+            "ordered_shot_ids": [shot["id"] for shot in shots],
+            "missing_shot_ids": missing,
+            "opening_title_card": {"text": narration["title"], "duration_s": TITLE_CARD_SECONDS},
+            "end_card": {
+                "text": narration["end_card_text"], "credits": narration["credits"],
+                "duration_s": narration["end_card_s"],
+            },
             "input_clips": [
                 {"shot_id": clip["shot_id"], "path": clip["path"].relative_to(project_dir).as_posix(),
                  "sha256": sha256_file(clip["path"]), "duration_s": clip["duration_s"],
@@ -533,7 +694,7 @@ def assemble_project(
                 for clip in clips
             ],
             "transition": {"type": transition, "requested_duration_s": transition_duration,
-                           "overlap_count": max(0, len(clips) - 1) if transition == "crossfade" else 0,
+                           "overlap_count": max(0, len(shots) - 1) if transition == "crossfade" else 0,
                            "overlap_duration_s": transition_duration if transition == "crossfade" else 0.0},
             "targets": report["targets"],
             "narration": {
@@ -576,6 +737,8 @@ def assemble_project(
     finally:
         for temporary in temporary_paths.values():
             temporary.unlink(missing_ok=True)
+        for asset in card_assets.values():
+            asset.unlink(missing_ok=True)
 
     print(f"Assembled {len(clips)} shots: {output_paths['16x9']} and {output_paths['9x16']}")
     print(f"Actual final duration: 16:9 {validations['16x9']['duration_s']:.3f}s; 9:16 {validations['9x16']['duration_s']:.3f}s")
