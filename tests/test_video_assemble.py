@@ -46,6 +46,9 @@ class WorkerSetupTests(unittest.TestCase):
                 cls.load_args = (args, kwargs)
                 return cls()
 
+            def enable_sequential_cpu_offload(self) -> None:
+                self.offload_enabled = True
+
             def enable_model_cpu_offload(self) -> None:
                 self.offload_enabled = True
 
@@ -92,7 +95,7 @@ class WorkerSetupTests(unittest.TestCase):
             )
             self.assertLess(flag_line, torch_import_line)
         self.assertLess(source.index('os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF"'), source.index("import torch"))
-        self.assertIn("enable_model_cpu_offload", source)
+        self.assertIn("enable_sequential_cpu_offload", source)
         self.assertIn("enable_tiling", source)
         self.assertIn('generator=torch.Generator(device="cpu")', source)
 

@@ -71,7 +71,7 @@ class Wan22Provider(VideoProvider):
     provider_id = "wan22"
     model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
     model_revision = "4c6ca6c2ded5c79550a3ca25555efc561112891a"
-    implementation_revision = "diffusers-model-offload-v2"
+    implementation_revision = "diffusers-adaptive-offload-v3"
     supported_parameters = (
         "image", "prompt", "negative_prompt", "generator", "height", "width",
         "num_frames", "num_inference_steps", "guidance_scale",

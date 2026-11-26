@@ -104,9 +104,16 @@ def _load_pipeline(model_id: str, revision: str, cache_dir: Path, torch: object)
         vae=vae,
         torch_dtype=torch.float16,
     )
-    # Do not call pipeline.to("cuda") first: model CPU offload keeps one whole
-    # component (e.g. transformer) on GPU during its pass, avoiding per-layer PCIe thrashing.
-    pipeline.enable_model_cpu_offload()
+    # On T4 (15GB VRAM), Wan 5B MUST use sequential CPU offload because model
+    # CPU offload cannot fit UMT5-XXL (9.5GB) + VAE (1.6GB) during handoff.
+    # On GPUs with >= 30GB VRAM (e.g. A100), model CPU offload is used for speed.
+    props = torch.cuda.get_device_properties(0) if getattr(torch, "cuda", None) and torch.cuda.is_available() else None
+    if props and props.total_memory >= 30 * (1024**3):
+        print(f"GPU memory {props.total_memory / (1024**3):.1f} GiB >= 30 GiB: using model CPU offload.", flush=True)
+        pipeline.enable_model_cpu_offload()
+    else:
+        print("Using sequential CPU offload to prevent CUDA OOM on <= 16 GiB GPU.", flush=True)
+        pipeline.enable_sequential_cpu_offload()
     pipeline.vae.enable_tiling()
     return pipeline
 
@@ -179,11 +186,12 @@ def main() -> int:
             "total_memory_bytes": int(props.total_memory),
             "free_memory_bytes": int(torch.cuda.mem_get_info(0)[0]),
         }
+        offload_mode = "model_cpu" if props.total_memory >= 30 * (1024**3) else "sequential_cpu"
         print("Runtime:", json.dumps({
             "python": sys.version.split()[0],
             "torch": torch.__version__,
             "diffusers": __import__("diffusers").__version__,
-            "offload": "model_cpu",
+            "offload": offload_mode,
         }), flush=True)
         print("GPU:", json.dumps(gpu), flush=True)
 
@@ -192,7 +200,7 @@ def main() -> int:
             model_id = str(data["model"])
             revision = str(data["model_revision"])
             cache_dir = SCRATCH / "huggingface-cache"
-            print(f"Loading {model_id}@{revision} with model CPU offload.", flush=True)
+            print(f"Loading {model_id}@{revision} with {offload_mode} offload.", flush=True)
             load_started = time.time()
             pipeline = _load_pipeline(model_id, revision, cache_dir, torch)
             load_s = time.time() - load_started
