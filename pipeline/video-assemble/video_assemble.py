@@ -289,18 +289,23 @@ def _resume_kaggle_batch(project_dir: Path, previous: dict[str, Any], timeout: i
         return None
     env = _kaggle_environment()
     status_ref = f"{kernel_id}/{version}"
+    print(f"Kaggle: checking previous run {status_ref} before resubmitting.", flush=True)
     deadline = time.monotonic() + timeout
     status_text = ""
     while time.monotonic() < deadline:
         status_text = _run_kaggle(["kernels", "status", status_ref], env, timeout=120)
         lowered = status_text.casefold()
-        if re.search(r"\b(complete|error|failed|cancelled)\b", lowered):
+        summary = " ".join(status_text.strip().split())[-240:] or "Kaggle returned no status text"
+        print(f"Kaggle: previous run status: {summary}", flush=True)
+        if re.search(r"\b(complete|error|failed|cancelled|canceled|cancel_acknowledged)\b", lowered):
             break
         time.sleep(20)
     else:
         raise TimeoutError(f"Previously submitted Kaggle kernel is still running: {status_ref}")
     lowered = status_text.casefold()
-    if not re.search(r"\bcomplete\b", lowered) or re.search(r"\b(error|failed|cancelled)\b", lowered):
+    if not re.search(r"\bcomplete\b", lowered) or re.search(
+        r"\b(error|failed|cancelled|canceled|cancel_acknowledged)\b", lowered
+    ):
         return None
     output_dir = project_dir / "cache" / "video-jobs" / "resumed-download"
     _run_kaggle(["kernels", "output", status_ref, "-p", str(output_dir), "-o"], env, timeout=1800)
@@ -318,6 +323,7 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
                   code_revision: str, timeout: int, manifest: dict[str, Any], on_status: Any = None) -> dict[str, Any]:
     """Upload one private dataset and submit one reusable private GPU kernel batch."""
     env = _kaggle_environment()
+    print("Kaggle: checking API access.", flush=True)
     try:
         _run_kaggle(["datasets", "list", "--page-size", "1"], env, timeout=60)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
@@ -328,6 +334,7 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
     kernel_slug = f"vid-forge-{project_slug}-video-worker"
     root = project_dir / "cache" / "video-jobs"
     bundle = root / "dataset"
+    print(f"Kaggle: preparing job bundle for {len(requests)} shot(s).", flush=True)
     if root.exists():
         shutil.rmtree(root)
     jobs_dir, images_dir = bundle / "jobs", bundle / "jobs" / "images"
@@ -348,12 +355,16 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
     metadata = {"title": f"Vid Forge {project_slug} generation inputs", "id": f"{username}/{dataset_slug}",
                 "licenses": [{"name": "unknown"}]}
     write_json_atomic(bundle / "dataset-metadata.json", metadata)
+    print(f"Kaggle: checking dataset {username}/{dataset_slug}.", flush=True)
     exists = subprocess.run(["kaggle", "datasets", "status", f"{username}/{dataset_slug}"], capture_output=True,
                             text=True, env=env, timeout=90, check=False).returncode == 0
     if exists:
+        print(f"Kaggle: uploading a new version of {username}/{dataset_slug}.", flush=True)
         _run_kaggle(["datasets", "version", "-p", str(bundle), "-m", f"Vid-Forge jobs {utc_now()}", "-t", "-r", "zip"], env)
     else:
+        print(f"Kaggle: creating dataset {username}/{dataset_slug}.", flush=True)
         _run_kaggle(["datasets", "create", "-p", str(bundle), "-t", "-r", "zip"], env)
+    print(f"Kaggle: waiting for dataset {username}/{dataset_slug} to be ready.", flush=True)
     _run_kaggle(["datasets", "status", f"{username}/{dataset_slug}"], env, timeout=300)
     kernel_dir = root / "kernel"
     kernel_dir.mkdir()
@@ -363,6 +374,7 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
                    "is_private": True, "enable_gpu": True, "enable_internet": True,
                    "dataset_sources": [f"{username}/{dataset_slug}"], "competition_sources": []}
     write_json_atomic(kernel_dir / "kernel-metadata.json", kernel_meta)
+    print(f"Kaggle: submitting {username}/{kernel_slug} on {accelerator}.", flush=True)
     submitted = _run_kaggle(["kernels", "push", "-p", str(kernel_dir), "--accelerator", accelerator, "-t", str(timeout)], env, timeout=300)
     version_match = re.search(r"(?:version\s+|/)(\d+)\b", submitted, re.IGNORECASE)
     version = int(version_match.group(1)) if version_match else None
@@ -372,26 +384,30 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
     if on_status:
         on_status("submitted", {"submitted_at": submission_at, "dataset_id": f"{username}/{dataset_slug}", "kernel_id": kernel_id, "kernel_version": version})
         on_status("running", {"started_at": started_at})
+    print(f"Kaggle: submitted {kernel_id}/{version or 'latest'}; waiting for kernel completion.", flush=True)
     deadline = time.monotonic() + timeout + 900
     status_text = ""
     while time.monotonic() < deadline:
         status_ref = f"{kernel_id}/{version}" if version else kernel_id
         status_text = _run_kaggle(["kernels", "status", status_ref], env, timeout=120)
         lowered = status_text.casefold()
-        terminal = re.search(r"\b(complete|error|failed|cancelled)\b", lowered)
+        terminal = re.search(r"\b(complete|error|failed|cancelled|canceled|cancel_acknowledged)\b", lowered)
         if terminal:
             break
         time.sleep(20)
     else:
         raise TimeoutError(f"Kaggle kernel timed out after {timeout}s: {kernel_id}")
     lowered = status_text.casefold()
-    if not re.search(r"\bcomplete\b", lowered) or re.search(r"\b(error|failed|cancelled)\b", lowered):
+    if not re.search(r"\bcomplete\b", lowered) or re.search(
+        r"\b(error|failed|cancelled|canceled|cancel_acknowledged)\b", lowered
+    ):
         raise RuntimeError(f"Kaggle kernel failed: {status_text[-1000:]}")
     if version is None:
         raise RuntimeError("Kaggle CLI did not report the submitted kernel version; refusing to download ambiguous latest output.")
     out_dir = root / "download"
     if on_status:
         on_status("downloading", {"completed_at": utc_now()})
+    print(f"Kaggle: downloading results for {kernel_id}/{version}.", flush=True)
     _run_kaggle(["kernels", "output", f"{kernel_id}/{version}", "-p", str(out_dir), "-o"], env, timeout=1800)
     result_file = out_dir / "results" / "results.json"
     if not result_file.is_file():

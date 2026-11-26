@@ -13,6 +13,7 @@ import zipfile
 
 INPUT = Path("/kaggle/input")
 WORK = Path("/kaggle/working")
+SCRATCH = Path("/kaggle/tmp")
 REPO = Path("/kaggle/working/Wan2.2")
 
 
@@ -59,6 +60,42 @@ def _find_jobs_manifest() -> Path:
     )
 
 
+def _pip_install(*args: str) -> None:
+    command = [sys.executable, "-m", "pip", "install", *args]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    if output:
+        print(output, file=sys.stderr, flush=True)
+    if result.returncode:
+        tail = output[-12000:] if output else "(pip produced no output)"
+        raise RuntimeError(
+            f"Dependency installation failed (exit {result.returncode}): {' '.join(command)}\n{tail}"
+        )
+
+
+def _install_wan_requirements(requirements: Path) -> None:
+    lines = requirements.read_text(encoding="utf-8").splitlines()
+    regular: list[str] = []
+    flash_attention: list[str] = []
+    for line in lines:
+        requirement = line.strip()
+        if not requirement or requirement.startswith("#"):
+            continue
+        if requirement.casefold().split("[", 1)[0].split("=", 1)[0].strip() in {"flash_attn", "flash-attn"}:
+            flash_attention.append(line)
+        else:
+            regular.append(line)
+
+    regular_file = WORK / "wan-requirements-without-flash-attn.txt"
+    regular_file.write_text("\n".join(regular) + "\n", encoding="utf-8")
+    if regular:
+        _pip_install("-r", str(regular_file))
+    if flash_attention:
+        # The pinned Wan attention module falls back to PyTorch SDPA when FA2/FA3
+        # is unavailable. Building flash-attn from source can exceed Kaggle's RAM.
+        print("Skipping optional flash_attn build; Wan will use PyTorch SDPA.", flush=True)
+
+
 def main() -> int:
     try:
         import torch
@@ -74,18 +111,21 @@ def main() -> int:
         data = json.loads(bundle.read_text(encoding="utf-8"))
         jobs = data["jobs"]
         WORK.mkdir(parents=True, exist_ok=True)
+        SCRATCH.mkdir(parents=True, exist_ok=True)
         if not REPO.is_dir():
             subprocess.run(["git", "clone", "https://github.com/Wan-Video/Wan2.2.git", str(REPO)], check=True)
         revision = str(data.get("code_revision", "1ea34ff"))
         subprocess.run(["git", "-C", str(REPO), "checkout", revision], check=True)
-        subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(REPO / "requirements.txt")], check=True)
-        subprocess.run([sys.executable, "-m", "pip", "install", "huggingface_hub"], check=True)
+        _install_wan_requirements(REPO / "requirements.txt")
+        _pip_install("huggingface_hub")
         from huggingface_hub import snapshot_download
         sys.path.insert(0, str(REPO))
+        checkpoint_dir = SCRATCH / "Wan2.2-TI2V-5B"
+        print(f"Downloading model checkpoint to scratch storage: {checkpoint_dir}", flush=True)
         checkpoint = snapshot_download(
             repo_id=data.get("model", "Wan-AI/Wan2.2-TI2V-5B"),
             revision=data.get("model_revision") or None,
-            local_dir=str(WORK / "Wan2.2-TI2V-5B"),
+            local_dir=str(checkpoint_dir),
         )
         import wan
         from wan.configs import WAN_CONFIGS

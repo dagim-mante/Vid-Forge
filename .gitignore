@@ -12,3 +12,6 @@ build/
 outputs/
 runs.jsonl
 projects/
+
+# pulled kernel files
+pulled/

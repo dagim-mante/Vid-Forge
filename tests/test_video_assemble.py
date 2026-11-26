@@ -232,7 +232,7 @@ class KaggleTests(unittest.TestCase):
         result = self._run_batch()
         self.assertEqual(result["kernel_version"], 7)
         output = next(call for call in self.calls if call[:2] == ["kernels", "output"])
-        self.assertIn("test-user/vid-forge-sample-video/7", output)
+        self.assertIn("test-user/vid-forge-sample-video-worker/7", output)
         self.assertTrue(any(call[:2] == ["datasets", "create"] for call in self.calls))
         self.assertTrue(any(call[:2] == ["kernels", "push"] and "NvidiaTeslaA100" in call for call in self.calls))
 

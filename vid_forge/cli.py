@@ -7,6 +7,8 @@ Supported commands:
     validate project=<project_name>
     narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]
     video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15] [--force]
+    assemble project=<project_name> [--transition cut|crossfade] [--transition-duration <seconds>]
+             [--output <filename>] [--dry-run] [--force]
     radio_cut project=<project_name>
     smoke_test [project=<project_name>]
 """
@@ -32,6 +34,7 @@ VALIDATE_SCRIPT = SCRIPT_DIR / "validate_storyboard.py"
 NARRATION_DIR = PIPELINE_DIR / "narration"
 NARRATION_SCRIPT = NARRATION_DIR / "narration.py"
 VIDEO_ASSEMBLE_SCRIPT = PIPELINE_DIR / "video-assemble" / "video_assemble.py"
+FILM_ASSEMBLY_SCRIPT = PIPELINE_DIR / "assembly" / "assemble.py"
 RADIO_CUT_SCRIPT = NARRATION_DIR / "radio_cut.py"
 PROJECT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 TRUE_VALUES = {"1", "true", "yes", "y"}
@@ -44,6 +47,9 @@ USAGE = """Usage:
   vid-forge validate project=<project_name>
   vid-forge narration project=<project_name> [line=<line_id>] [--force] [--no-assemble]
   vid-forge radio_cut project=<project_name>
+  vid-forge assemble project=<project_name> [--transition cut|crossfade]
+                      [--transition-duration <seconds>] [--output <filename>]
+                      [--dry-run] [--force]
   vid-forge smoke_test [project=<project_name>]
   vid-forge video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15]
               [--force] [--dry-run] [--validate-only] [--accelerator <name>]
@@ -64,6 +70,8 @@ Commands:
               one line only; --no-assemble skips the radio cut.
   radio_cut   Rebuild the radio cut from existing narration audio (no API calls).
   video       Generate selected-keyframe clips, using local Ken Burns and Kaggle Wan i2v.
+  assemble    Combine per-shot videos with timed narration, music, and burned-in subtitles.
+              Writes 1280x720 and 720x1280 finals; supports hard cuts and crossfades.
   smoke_test  Run smoke tests (writes under projects/<project_name>/ if given)."""
 
 
@@ -390,6 +398,45 @@ def cmd_video(args: Sequence[str]) -> int:
     ))
 
 
+def cmd_assemble(args: Sequence[str]) -> int:
+    """Handle `assemble project=<project_name>` for final film assembly."""
+    try:
+        options = _parse_options(
+            args,
+            value_keys=("project", "transition", "transition-duration", "output"),
+            flag_keys=("dry-run", "force"),
+        )
+    except SystemExit:
+        print(
+            "Usage: vid-forge assemble project=<project_name> [--transition cut|crossfade] "
+            "[--transition-duration <seconds>] [--output <filename>] [--dry-run] [--force]"
+        )
+        return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    project_dir, code = _resolve_project(options.get("project"))  # type: ignore[arg-type]
+    if project_dir is None:
+        return code
+    try:
+        transition_duration = (
+            float(str(options["transition-duration"]))
+            if options.get("transition-duration") is not None else 0.5
+        )
+    except ValueError:
+        print("Error: --transition-duration must be a positive number of seconds.", file=sys.stderr)
+        return 2
+    module = _load_module(FILM_ASSEMBLY_SCRIPT, "film_assembly")
+    return int(module.run_assembly(
+        project_dir,
+        transition=str(options.get("transition", "cut")),
+        transition_duration=transition_duration,
+        output_name=str(options["output"]) if options.get("output") is not None else None,
+        dry_run=bool(options.get("dry-run", False)),
+        force=bool(options.get("force", False)),
+    ))
+
+
 def cmd_smoke_test(args: Sequence[str]) -> int:
     """Handle `smoke_test [project=<project_name>]`."""
     try:
@@ -455,6 +502,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_radio_cut(rest)
     if command == "video":
         return cmd_video(rest)
+    if command == "assemble":
+        return cmd_assemble(rest)
     if command == "smoke_test":
         return cmd_smoke_test(rest)
 
