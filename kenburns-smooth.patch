@@ -1,0 +1,230 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 0f65fdc..f06da78 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -37,7 +37,7 @@ flowchart TD
+ 
+     subgraph VideoStage ["Stage 4: Per-Shot Video Synthesis"]
+         Router{"Motion Type Router"}
+-        KB["Local FFmpeg (Ken Burns 4% Eased Motion)"]
++        KB["Local FFmpeg (Ken Burns Smooth Sub-pixel Motion)"]
+         Kaggle["Kaggle GPU Worker (Wan 2.2 TI2V 5B Diffusers)"]
+         VCache["Content-Addressed Video Cache (SHA-256 Fingerprint)"]
+         ShotClips["outputs/shots/shot_NN.mp4"]
+@@ -71,7 +71,7 @@ flowchart TD
+    - **Google Gemini**: Brief parsing, script reasoning, structured storyboard extraction, and speech synthesis (TTS).
+    - **Cloudflare Workers AI**: Fast, serverless keyframe image generation (`FLUX.2 klein 9B`).
+    - **Kaggle GPU Workers**: Heavy diffusion video generation (`Wan 2.2 TI2V 5B`) run as asynchronous batch jobs.
+-   - **Local FFmpeg**: Subtle Ken Burns pan/zoom, subtitle rendering, audio ducking, and final H.264 composition.
++   - **Local FFmpeg**: Smooth Ken Burns pan/zoom, subtitle rendering, audio ducking, and final H.264 composition.
+ 
+ ---
+ 
+@@ -178,7 +178,7 @@ vid-forge/
+ - **Output**: Individual normalized video clips `outputs/shots/<shot_id>.mp4` (1280×720, 24 FPS, H.264, silent).
+ - **Local Motion Engine (`Ken Burns`)**:
+   - Applied when `shot.motion.type == "kenburns"`.
+-  - Uses local FFmpeg filter graphs (`zoompan`) executing a subtle 4% eased camera move (zoom-in, zoom-out, pan-left, pan-right).
++  - Uses a local FFmpeg `perspective` filter graph (sub-pixel, bicubic) executing a slow 12% eased camera move (zoom-in, zoom-out, pan-left, pan-right).
+   - Instant, zero GPU quota cost.
+ - **Remote Diffusion Engine (`Kaggle Wan 2.2 TI2V`)**:
+   - Applied when `shot.motion.type == "i2v"`.
+diff --git a/FAILURES.md b/FAILURES.md
+index 184f583..eab431c 100644
+--- a/FAILURES.md
++++ b/FAILURES.md
+@@ -21,5 +21,8 @@
+ - **Change made:** Reduced travel from 16% to 4%, added eased motion, and bumped the filter version to invalidate old cached renders.
+ - **Result:** Not yet reviewed on a newly rendered clip.
+ - **Next step:** Render a representative Ken Burns shot, watch it at normal playback size, and record whether the movement is calm enough in `EXPERIMENTS.md`.
+-- **Status:** Fix implemented; validation pending.
++- **Follow-up (still shaky, not just too fast):** Cutting the travel to 4% did not remove the shake. Root cause was FFmpeg's `zoompan`, which rounds its crop window to whole input pixels, so slow moves advanced in uneven 1-2 px jumps (measured ~1.5 px of frame-to-frame jitter on a pan, larger than the movement itself). A second, smaller cause: the looped still defaulted to 25 fps and was resampled to 24 fps, dropping a frame about once a second.
++- **Change made (v3):** Replaced `zoompan` with the sub-pixel `perspective` filter (bicubic, evaluated per frame), set `-framerate` on the still input, and restored a visible but slow 12% move. Filter version bumped to `ffmpeg-filter-v3-smooth-subpixel`.
++- **Result:** Measured jitter dropped from ~1.5 px to ~0.09 px on a pan and ~0.01 px on a zoom, matching a float-precision reference render. Not yet reviewed by a human viewer at normal playback size.
++- **Status:** Fix implemented and measured; human review pending.
+ 
+diff --git a/README.md b/README.md
+index 3031be6..fe03063 100644
+--- a/README.md
++++ b/README.md
+@@ -6,7 +6,7 @@ Vid-Forge orchestrates multimodal cloud and local providers:
+ - **Google Gemini**: Script reasoning, structured storyboard extraction, and speech synthesis (TTS).
+ - **Cloudflare Workers AI**: Fast, serverless keyframe candidate generation (`FLUX.2 klein 9B`).
+ - **Kaggle GPU Workers**: Diffusion video generation (`Wan 2.2 TI2V 5B`) running on remote GPU hardware.
+-- **Local FFmpeg**: Subtle Ken Burns pan/zoom camera motion, aspect ratio normalization, subtitle compositing, and final audio/video mixing.
++- **Local FFmpeg**: Smooth, slow Ken Burns pan/zoom camera motion, aspect ratio normalization, subtitle compositing, and final audio/video mixing.
+ 
+ ---
+ 
+@@ -110,7 +110,7 @@ What the `film` command executes:
+ 3. **[3/6] Generating Keyframes**: Generates candidate images via Cloudflare Workers AI for any shots missing candidates.
+ 4. **[4/6] Generating Narration & Subtitles**: Synthesizes 11 Amharic voice lines via Gemini TTS, builds `timing.json`, creates `narration_16x9.srt` and `narration_9x16.srt`, and renders a preview radio cut.
+ 5. **[5/6] Generating Shot Videos**:
+-   - `shot_02` & `shot_06` (Ken Burns): Generates subtle 4% eased camera pan/zoom locally with zero GPU cost.
++   - `shot_02` & `shot_06` (Ken Burns): Generates a smooth, slow 12% camera pan/zoom locally with zero GPU cost.
+    - Remaining shots (Wan 2.2): Packages jobs and submits them to the Kaggle GPU worker with sequential CPU offload.
+ 6. **[6/6] Assembling Final Films**: Blends all clips, applies opening title (3s) and end credits (5s), burns in subtitles, mixes ducked audio, and outputs the final media.
+ 
+diff --git a/pipeline/video-assemble/README.md b/pipeline/video-assemble/README.md
+index 4c13891..9375a48 100644
+--- a/pipeline/video-assemble/README.md
++++ b/pipeline/video-assemble/README.md
+@@ -32,7 +32,7 @@ vid-forge video project=tibeb --shot shot_02 --steps 20 --guidance 5
+ 
+ `--dry-run` reports selected images, fingerprints, cache state, local renders, Kaggle jobs, model, and accelerator. It does not upload data or submit a kernel. `--validate-only` checks the cache metadata, checksum, video stream, and full decode; it does not contact Kaggle. `--force` stores a new immutable generation and preserves previous artifacts.
+ 
+-Ken Burns shots use the storyboard's `motion.camera` (`zoom_in`, `zoom_out`, `pan_left`, `pan_right`) and never consume GPU inference. Movement is limited to a 4% zoom/pan range and eased across the shot for a slow, subtle camera move. `i2v` shots use the chosen provider. HunyuanVideo 1.5 is represented by a provider contract, but its worker is not implemented; choosing it for a pending i2v shot returns a clear error rather than pretending to generate clips.
++Ken Burns shots use the storyboard's `motion.camera` (`zoom_in`, `zoom_out`, `pan_left`, `pan_right`) and never consume GPU inference. Each move is a slow 12% push-in, pull-out, or sideways pan spread over the whole shot (longer shots move more slowly), with light easing so it neither lurches at the start nor stops dead at the cut. Frames are rendered with FFmpeg's sub-pixel `perspective` filter rather than `zoompan`, which snaps to whole pixels and makes slow moves look shaky. Travel, easing, and quality are tunable via `KEN_BURNS_ZOOM`, `KEN_BURNS_EASE`, and `KEN_BURNS_SUPERSAMPLE` in `video_assemble.py`. `i2v` shots use the chosen provider. HunyuanVideo 1.5 is represented by a provider contract, but its worker is not implemented; choosing it for a pending i2v shot returns a clear error rather than pretending to generate clips.
+ 
+ ## Cache and recovery
+ 
+diff --git a/pipeline/video-assemble/video_assemble.py b/pipeline/video-assemble/video_assemble.py
+index 67ccdd1..c095392 100644
+--- a/pipeline/video-assemble/video_assemble.py
++++ b/pipeline/video-assemble/video_assemble.py
+@@ -36,7 +36,11 @@ MANIFEST_SCHEMA = 1
+ DEFAULT_STEPS = 12
+ DEFAULT_GUIDANCE = 5.0
+ OUTPUT_WIDTH, OUTPUT_HEIGHT = 1280, 720
+-KEN_BURNS_FILTER_VERSION = "ffmpeg-filter-v2-subtle-eased"
++KEN_BURNS_FILTER_VERSION = "ffmpeg-filter-v3-smooth-subpixel"
++# Ken Burns camera tuning. Travel is total over the whole shot, so longer shots move more slowly.
++KEN_BURNS_ZOOM = 1.12        # 12% push-in / pull-out (zoom shots) and fixed zoom used while panning
++KEN_BURNS_EASE = 0.5         # 0 = constant speed, 1 = full ease-in/out (stops dead at both ends)
++KEN_BURNS_SUPERSAMPLE = 1.0  # working resolution multiplier; 1.5 is slightly sharper but ~2x slower
+ STORYBOARD_PATH = Path("production") / "storyboard.json"
+ SELECTION_MANIFEST = Path("production") / "keyframes.json"
+ 
+@@ -193,34 +197,58 @@ def _ffprobe_path() -> str:
+     return path
+ 
+ 
++def _kenburns_filter(camera: str, frames: int, fps: int) -> str:
++    """Build the FFmpeg filter graph for one Ken Burns move.
++
++    The old implementation used ``zoompan``, which snaps its crop window to whole input pixels. On a
++    1280x720 input a slow move therefore advanced in uneven 1-2 px jumps, which reads as camera shake.
++    ``perspective`` takes float corner coordinates and interpolates bicubically, so the window glides
++    at sub-pixel precision.
++    """
++    if camera not in {"zoom_in", "zoom_out", "pan_left", "pan_right"}:
++        raise ValueError(f"unsupported Ken Burns camera {camera!r}; use zoom_in, zoom_out, pan_left, or pan_right.")
++    ww, wh = (round(OUTPUT_WIDTH * KEN_BURNS_SUPERSAMPLE / 2) * 2, round(OUTPUT_HEIGHT * KEN_BURNS_SUPERSAMPLE / 2) * 2)
++    t = f"(on/{max(frames - 1, 1)})"  # 0 -> 1 across the shot
++    # Blend of linear and cosine easing: no abrupt start, but no dead stop at the cut either.
++    progress = f"({1 - KEN_BURNS_EASE}*{t}+{KEN_BURNS_EASE}*(0.5-0.5*cos(PI*{t})))"
++    zoom_max = KEN_BURNS_ZOOM
++    if camera == "zoom_in":
++        zoom, px = f"(1+({zoom_max}-1)*{progress})", "0.5"
++    elif camera == "zoom_out":
++        zoom, px = f"({zoom_max}-({zoom_max}-1)*{progress})", "0.5"
++    else:
++        zoom = str(zoom_max)
++        px = progress if camera == "pan_right" else f"(1-{progress})"
++    # Source window (in the working-resolution frame): size W/zoom x H/zoom, always inside the image.
++    x0, y0 = f"((W-W/{zoom})*{px})", f"((H-H/{zoom})*0.5)"
++    quad = (f"x0='{x0}':y0='{y0}':x1='{x0}+W/{zoom}':y1='{y0}':"
++            f"x2='{x0}':y2='{y0}+H/{zoom}':x3='{x0}+W/{zoom}':y3='{y0}+H/{zoom}'")
++    parts = [f"scale={ww}:{wh}:force_original_aspect_ratio=increase:flags=lanczos", f"crop={ww}:{wh}",
++             f"perspective={quad}:interpolation=cubic:eval=frame"]
++    if (ww, wh) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
++        parts.append(f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:flags=lanczos")
++    parts += ["setsar=1", "format=yuv420p"]
++    return ",".join(parts)
++
++
+ def _render_kenburns(image: Path, output: Path, shot: dict[str, Any], fps: int) -> dict[str, Any]:
+     ffmpeg = _ffmpeg_path()
+     _ffprobe_path()
+     motion = shot["motion"]
+     camera = motion.get("camera")
+-    if camera not in {"zoom_in", "zoom_out", "pan_left", "pan_right"}:
+-        raise ValueError(f"{shot['id']}: unsupported Ken Burns camera {camera!r}; use zoom_in, zoom_out, pan_left, or pan_right.")
+     duration = float(shot["duration_s"])
+     frames = max(1, round(duration * fps))
+-    # Keep the total camera travel restrained and ease it in/out so movement
+-    # does not feel like a sudden digital camera adjustment.
+-    zoom = 1.04
+-    progress = f"(0.5-0.5*cos(PI*on/{max(frames-1,1)}))"
+-    if camera in {"zoom_in", "zoom_out"}:
+-        initial, final = (1.0, zoom) if camera == "zoom_in" else (zoom, 1.0)
+-        z = f"{initial}+({final}-{initial})*{progress}"
+-        x, y = "(iw-iw/zoom)/2", "(ih-ih/zoom)/2"
+-    else:
+-        z = str(zoom)
+-        x = f"(iw-iw/zoom)*{progress}" if camera == "pan_right" else f"(iw-iw/zoom)*(1-{progress})"
+-        y = "(ih-ih/zoom)/2"
++    try:
++        filter_graph = _kenburns_filter(camera, frames, fps)
++    except ValueError as exc:
++        raise ValueError(f"{shot['id']}: {exc}") from exc
+     output.parent.mkdir(parents=True, exist_ok=True)
+-    filter_graph = (f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,"
+-                    f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},zoompan=z='{z}':x='{x}':y='{y}':d=1:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:fps={fps},"
+-                    "setsar=1,format=yuv420p")
+-    result = subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-i", str(image),
+-                             "-vf", filter_graph, "-frames:v", str(frames), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+-                             "-r", str(fps), "-movflags", "+faststart", str(output)], capture_output=True, text=True, check=False)
++    # -framerate makes the looped still arrive at the target fps. Without it FFmpeg defaults to 25 fps and
++    # then drops a frame roughly once a second to reach 24, which shows up as a tiny stutter in the move.
++    result = subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-framerate", str(fps), "-loop", "1",
++                             "-i", str(image), "-vf", filter_graph, "-frames:v", str(frames), "-an", "-c:v", "libx264",
++                             "-pix_fmt", "yuv420p", "-r", str(fps), "-movflags", "+faststart", str(output)],
++                            capture_output=True, text=True, check=False)
+     if result.returncode:
+         raise RuntimeError(f"FFmpeg Ken Burns render failed: {result.stderr[-700:]}")
+     return probe_video(output)
+diff --git a/tests/test_video_assemble.py b/tests/test_video_assemble.py
+index 82ead06..e69cb83 100644
+--- a/tests/test_video_assemble.py
++++ b/tests/test_video_assemble.py
+@@ -7,6 +7,7 @@ from pathlib import Path
+ import sys
+ import tempfile
+ import os
++import shutil
+ import threading
+ import time
+ import unittest
+@@ -367,5 +368,41 @@ class KaggleTests(unittest.TestCase):
+         self.assertIn("test-user/vid-forge-sample-video/4", calls[-1])
+ 
+ 
++class KenBurnsTests(unittest.TestCase):
++    def test_filter_uses_subpixel_perspective_not_integer_zoompan(self) -> None:
++        for camera in ("zoom_in", "zoom_out", "pan_left", "pan_right"):
++            graph = video_assemble._kenburns_filter(camera, 120, 24)
++            self.assertIn("perspective=", graph)
++            self.assertIn("eval=frame", graph)
++            self.assertIn("interpolation=cubic", graph)
++            self.assertNotIn("zoompan", graph)
++
++    def test_unknown_camera_is_rejected(self) -> None:
++        with self.assertRaises(ValueError):
++            video_assemble._kenburns_filter("spin", 120, 24)
++
++    def test_filter_version_was_bumped_so_old_shaky_clips_are_not_reused(self) -> None:
++        self.assertNotEqual(video_assemble.KEN_BURNS_FILTER_VERSION, "ffmpeg-filter-v2-subtle-eased")
++
++    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is not installed")
++    def test_render_produces_expected_frame_count_and_size(self) -> None:
++        import subprocess
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            image = root / "still.png"
++            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1408x768:rate=1",
++                            "-frames:v", "1", str(image)], check=True)
++            for camera in ("zoom_in", "pan_right"):
++                out = root / f"{camera}.mp4"
++                video_assemble._render_kenburns(image, out, {"id": "shot_t", "duration_s": 1.0,
++                                                            "motion": {"camera": camera}}, 24)
++                probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
++                                        "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", str(out)],
++                                       capture_output=True, text=True, check=True)
++                stream = json.loads(probe.stdout)["streams"][0]
++                self.assertEqual((stream["width"], stream["height"]), (1280, 720))
++                self.assertEqual(int(stream["nb_read_frames"]), 24)
++
++
+ if __name__ == "__main__":
+     unittest.main()

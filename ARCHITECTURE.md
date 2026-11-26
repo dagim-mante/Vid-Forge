@@ -37,7 +37,7 @@ flowchart TD
 
     subgraph VideoStage ["Stage 4: Per-Shot Video Synthesis"]
         Router{"Motion Type Router"}
-        KB["Local FFmpeg (Ken Burns 4% Eased Motion)"]
+        KB["Local FFmpeg (Ken Burns Smooth Sub-pixel Motion)"]
         Kaggle["Kaggle GPU Worker (Wan 2.2 TI2V 5B Diffusers)"]
         VCache["Content-Addressed Video Cache (SHA-256 Fingerprint)"]
         ShotClips["outputs/shots/shot_NN.mp4"]
@@ -71,7 +71,7 @@ flowchart TD
    - **Google Gemini**: Brief parsing, script reasoning, structured storyboard extraction, and speech synthesis (TTS).
    - **Cloudflare Workers AI**: Fast, serverless keyframe image generation (`FLUX.2 klein 9B`).
    - **Kaggle GPU Workers**: Heavy diffusion video generation (`Wan 2.2 TI2V 5B`) run as asynchronous batch jobs.
-   - **Local FFmpeg**: Subtle Ken Burns pan/zoom, subtitle rendering, audio ducking, and final H.264 composition.
+   - **Local FFmpeg**: Smooth Ken Burns pan/zoom, subtitle rendering, audio ducking, and final H.264 composition.
 
 ---
 
@@ -178,7 +178,7 @@ vid-forge/
 - **Output**: Individual normalized video clips `outputs/shots/<shot_id>.mp4` (1280×720, 24 FPS, H.264, silent).
 - **Local Motion Engine (`Ken Burns`)**:
   - Applied when `shot.motion.type == "kenburns"`.
-  - Uses local FFmpeg filter graphs (`zoompan`) executing a subtle 4% eased camera move (zoom-in, zoom-out, pan-left, pan-right).
+  - Uses a local FFmpeg `perspective` filter graph (sub-pixel, bicubic) executing a slow 12% eased camera move (zoom-in, zoom-out, pan-left, pan-right).
   - Instant, zero GPU quota cost.
 - **Remote Diffusion Engine (`Kaggle Wan 2.2 TI2V`)**:
   - Applied when `shot.motion.type == "i2v"`.

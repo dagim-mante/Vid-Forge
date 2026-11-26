@@ -32,7 +32,7 @@ vid-forge video project=tibeb --shot shot_02 --steps 20 --guidance 5
 
 `--dry-run` reports selected images, fingerprints, cache state, local renders, Kaggle jobs, model, and accelerator. It does not upload data or submit a kernel. `--validate-only` checks the cache metadata, checksum, video stream, and full decode; it does not contact Kaggle. `--force` stores a new immutable generation and preserves previous artifacts.
 
-Ken Burns shots use the storyboard's `motion.camera` (`zoom_in`, `zoom_out`, `pan_left`, `pan_right`) and never consume GPU inference. Movement is limited to a 4% zoom/pan range and eased across the shot for a slow, subtle camera move. `i2v` shots use the chosen provider. HunyuanVideo 1.5 is represented by a provider contract, but its worker is not implemented; choosing it for a pending i2v shot returns a clear error rather than pretending to generate clips.
+Ken Burns shots use the storyboard's `motion.camera` (`zoom_in`, `zoom_out`, `pan_left`, `pan_right`) and never consume GPU inference. Each move is a slow 12% push-in, pull-out, or sideways pan spread over the whole shot (longer shots move more slowly), with light easing so it neither lurches at the start nor stops dead at the cut. Frames are rendered with FFmpeg's sub-pixel `perspective` filter rather than `zoompan`, which snaps to whole pixels and makes slow moves look shaky. Travel, easing, and quality are tunable via `KEN_BURNS_ZOOM`, `KEN_BURNS_EASE`, and `KEN_BURNS_SUPERSAMPLE` in `video_assemble.py`. `i2v` shots use the chosen provider. HunyuanVideo 1.5 is represented by a provider contract, but its worker is not implemented; choosing it for a pending i2v shot returns a clear error rather than pretending to generate clips.
 
 ## Cache and recovery
 

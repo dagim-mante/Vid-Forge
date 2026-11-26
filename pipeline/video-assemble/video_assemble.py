@@ -36,7 +36,11 @@ MANIFEST_SCHEMA = 1
 DEFAULT_STEPS = 12
 DEFAULT_GUIDANCE = 5.0
 OUTPUT_WIDTH, OUTPUT_HEIGHT = 1280, 720
-KEN_BURNS_FILTER_VERSION = "ffmpeg-filter-v2-subtle-eased"
+KEN_BURNS_FILTER_VERSION = "ffmpeg-filter-v3-smooth-subpixel"
+# Ken Burns camera tuning. Travel is total over the whole shot, so longer shots move more slowly.
+KEN_BURNS_ZOOM = 1.12        # 12% push-in / pull-out (zoom shots) and fixed zoom used while panning
+KEN_BURNS_EASE = 0.5         # 0 = constant speed, 1 = full ease-in/out (stops dead at both ends)
+KEN_BURNS_SUPERSAMPLE = 1.0  # working resolution multiplier; 1.5 is slightly sharper but ~2x slower
 STORYBOARD_PATH = Path("production") / "storyboard.json"
 SELECTION_MANIFEST = Path("production") / "keyframes.json"
 
@@ -193,34 +197,58 @@ def _ffprobe_path() -> str:
     return path
 
 
+def _kenburns_filter(camera: str, frames: int, fps: int) -> str:
+    """Build the FFmpeg filter graph for one Ken Burns move.
+
+    The old implementation used ``zoompan``, which snaps its crop window to whole input pixels. On a
+    1280x720 input a slow move therefore advanced in uneven 1-2 px jumps, which reads as camera shake.
+    ``perspective`` takes float corner coordinates and interpolates bicubically, so the window glides
+    at sub-pixel precision.
+    """
+    if camera not in {"zoom_in", "zoom_out", "pan_left", "pan_right"}:
+        raise ValueError(f"unsupported Ken Burns camera {camera!r}; use zoom_in, zoom_out, pan_left, or pan_right.")
+    ww, wh = (round(OUTPUT_WIDTH * KEN_BURNS_SUPERSAMPLE / 2) * 2, round(OUTPUT_HEIGHT * KEN_BURNS_SUPERSAMPLE / 2) * 2)
+    t = f"(on/{max(frames - 1, 1)})"  # 0 -> 1 across the shot
+    # Blend of linear and cosine easing: no abrupt start, but no dead stop at the cut either.
+    progress = f"({1 - KEN_BURNS_EASE}*{t}+{KEN_BURNS_EASE}*(0.5-0.5*cos(PI*{t})))"
+    zoom_max = KEN_BURNS_ZOOM
+    if camera == "zoom_in":
+        zoom, px = f"(1+({zoom_max}-1)*{progress})", "0.5"
+    elif camera == "zoom_out":
+        zoom, px = f"({zoom_max}-({zoom_max}-1)*{progress})", "0.5"
+    else:
+        zoom = str(zoom_max)
+        px = progress if camera == "pan_right" else f"(1-{progress})"
+    # Source window (in the working-resolution frame): size W/zoom x H/zoom, always inside the image.
+    x0, y0 = f"((W-W/{zoom})*{px})", f"((H-H/{zoom})*0.5)"
+    quad = (f"x0='{x0}':y0='{y0}':x1='{x0}+W/{zoom}':y1='{y0}':"
+            f"x2='{x0}':y2='{y0}+H/{zoom}':x3='{x0}+W/{zoom}':y3='{y0}+H/{zoom}'")
+    parts = [f"scale={ww}:{wh}:force_original_aspect_ratio=increase:flags=lanczos", f"crop={ww}:{wh}",
+             f"perspective={quad}:interpolation=cubic:eval=frame"]
+    if (ww, wh) != (OUTPUT_WIDTH, OUTPUT_HEIGHT):
+        parts.append(f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:flags=lanczos")
+    parts += ["setsar=1", "format=yuv420p"]
+    return ",".join(parts)
+
+
 def _render_kenburns(image: Path, output: Path, shot: dict[str, Any], fps: int) -> dict[str, Any]:
     ffmpeg = _ffmpeg_path()
     _ffprobe_path()
     motion = shot["motion"]
     camera = motion.get("camera")
-    if camera not in {"zoom_in", "zoom_out", "pan_left", "pan_right"}:
-        raise ValueError(f"{shot['id']}: unsupported Ken Burns camera {camera!r}; use zoom_in, zoom_out, pan_left, or pan_right.")
     duration = float(shot["duration_s"])
     frames = max(1, round(duration * fps))
-    # Keep the total camera travel restrained and ease it in/out so movement
-    # does not feel like a sudden digital camera adjustment.
-    zoom = 1.04
-    progress = f"(0.5-0.5*cos(PI*on/{max(frames-1,1)}))"
-    if camera in {"zoom_in", "zoom_out"}:
-        initial, final = (1.0, zoom) if camera == "zoom_in" else (zoom, 1.0)
-        z = f"{initial}+({final}-{initial})*{progress}"
-        x, y = "(iw-iw/zoom)/2", "(ih-ih/zoom)/2"
-    else:
-        z = str(zoom)
-        x = f"(iw-iw/zoom)*{progress}" if camera == "pan_right" else f"(iw-iw/zoom)*(1-{progress})"
-        y = "(ih-ih/zoom)/2"
+    try:
+        filter_graph = _kenburns_filter(camera, frames, fps)
+    except ValueError as exc:
+        raise ValueError(f"{shot['id']}: {exc}") from exc
     output.parent.mkdir(parents=True, exist_ok=True)
-    filter_graph = (f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,"
-                    f"crop={OUTPUT_WIDTH}:{OUTPUT_HEIGHT},zoompan=z='{z}':x='{x}':y='{y}':d=1:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:fps={fps},"
-                    "setsar=1,format=yuv420p")
-    result = subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-loop", "1", "-i", str(image),
-                             "-vf", filter_graph, "-frames:v", str(frames), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                             "-r", str(fps), "-movflags", "+faststart", str(output)], capture_output=True, text=True, check=False)
+    # -framerate makes the looped still arrive at the target fps. Without it FFmpeg defaults to 25 fps and
+    # then drops a frame roughly once a second to reach 24, which shows up as a tiny stutter in the move.
+    result = subprocess.run([ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-framerate", str(fps), "-loop", "1",
+                             "-i", str(image), "-vf", filter_graph, "-frames:v", str(frames), "-an", "-c:v", "libx264",
+                             "-pix_fmt", "yuv420p", "-r", str(fps), "-movflags", "+faststart", str(output)],
+                            capture_output=True, text=True, check=False)
     if result.returncode:
         raise RuntimeError(f"FFmpeg Ken Burns render failed: {result.stderr[-700:]}")
     return probe_video(output)

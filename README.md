@@ -6,7 +6,7 @@ Vid-Forge orchestrates multimodal cloud and local providers:
 - **Google Gemini**: Script reasoning, structured storyboard extraction, and speech synthesis (TTS).
 - **Cloudflare Workers AI**: Fast, serverless keyframe candidate generation (`FLUX.2 klein 9B`).
 - **Kaggle GPU Workers**: Diffusion video generation (`Wan 2.2 TI2V 5B`) running on remote GPU hardware.
-- **Local FFmpeg**: Subtle Ken Burns pan/zoom camera motion, aspect ratio normalization, subtitle compositing, and final audio/video mixing.
+- **Local FFmpeg**: Smooth, slow Ken Burns pan/zoom camera motion, aspect ratio normalization, subtitle compositing, and final audio/video mixing.
 
 ---
 
@@ -110,7 +110,7 @@ What the `film` command executes:
 3. **[3/6] Generating Keyframes**: Generates candidate images via Cloudflare Workers AI for any shots missing candidates.
 4. **[4/6] Generating Narration & Subtitles**: Synthesizes 11 Amharic voice lines via Gemini TTS, builds `timing.json`, creates `narration_16x9.srt` and `narration_9x16.srt`, and renders a preview radio cut.
 5. **[5/6] Generating Shot Videos**:
-   - `shot_02` & `shot_06` (Ken Burns): Generates subtle 4% eased camera pan/zoom locally with zero GPU cost.
+   - `shot_02` & `shot_06` (Ken Burns): Generates a smooth, slow 12% camera pan/zoom locally with zero GPU cost.
    - Remaining shots (Wan 2.2): Packages jobs and submits them to the Kaggle GPU worker with sequential CPU offload.
 6. **[6/6] Assembling Final Films**: Blends all clips, applies opening title (3s) and end credits (5s), burns in subtitles, mixes ducked audio, and outputs the final media.
 

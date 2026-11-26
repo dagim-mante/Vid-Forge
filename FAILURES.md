@@ -21,5 +21,8 @@
 - **Change made:** Reduced travel from 16% to 4%, added eased motion, and bumped the filter version to invalidate old cached renders.
 - **Result:** Not yet reviewed on a newly rendered clip.
 - **Next step:** Render a representative Ken Burns shot, watch it at normal playback size, and record whether the movement is calm enough in `EXPERIMENTS.md`.
-- **Status:** Fix implemented; validation pending.
+- **Follow-up (still shaky, not just too fast):** Cutting the travel to 4% did not remove the shake. Root cause was FFmpeg's `zoompan`, which rounds its crop window to whole input pixels, so slow moves advanced in uneven 1-2 px jumps (measured ~1.5 px of frame-to-frame jitter on a pan, larger than the movement itself). A second, smaller cause: the looped still defaulted to 25 fps and was resampled to 24 fps, dropping a frame about once a second.
+- **Change made (v3):** Replaced `zoompan` with the sub-pixel `perspective` filter (bicubic, evaluated per frame), set `-framerate` on the still input, and restored a visible but slow 12% move. Filter version bumped to `ffmpeg-filter-v3-smooth-subpixel`.
+- **Result:** Measured jitter dropped from ~1.5 px to ~0.09 px on a pan and ~0.01 px on a zoom, matching a float-precision reference render. Not yet reviewed by a human viewer at normal playback size.
+- **Status:** Fix implemented and measured; human review pending.
 

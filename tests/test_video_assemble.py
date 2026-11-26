@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 import os
+import shutil
 import threading
 import time
 import unittest
@@ -365,6 +366,42 @@ class KaggleTests(unittest.TestCase):
             result = video_assemble._resume_kaggle_batch(self.root, previous, 30)
         self.assertEqual(result["kernel_version"], 4)
         self.assertIn("test-user/vid-forge-sample-video/4", calls[-1])
+
+
+class KenBurnsTests(unittest.TestCase):
+    def test_filter_uses_subpixel_perspective_not_integer_zoompan(self) -> None:
+        for camera in ("zoom_in", "zoom_out", "pan_left", "pan_right"):
+            graph = video_assemble._kenburns_filter(camera, 120, 24)
+            self.assertIn("perspective=", graph)
+            self.assertIn("eval=frame", graph)
+            self.assertIn("interpolation=cubic", graph)
+            self.assertNotIn("zoompan", graph)
+
+    def test_unknown_camera_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            video_assemble._kenburns_filter("spin", 120, 24)
+
+    def test_filter_version_was_bumped_so_old_shaky_clips_are_not_reused(self) -> None:
+        self.assertNotEqual(video_assemble.KEN_BURNS_FILTER_VERSION, "ffmpeg-filter-v2-subtle-eased")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is not installed")
+    def test_render_produces_expected_frame_count_and_size(self) -> None:
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            image = root / "still.png"
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1408x768:rate=1",
+                            "-frames:v", "1", str(image)], check=True)
+            for camera in ("zoom_in", "pan_right"):
+                out = root / f"{camera}.mp4"
+                video_assemble._render_kenburns(image, out, {"id": "shot_t", "duration_s": 1.0,
+                                                            "motion": {"camera": camera}}, 24)
+                probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+                                        "-show_entries", "stream=width,height,nb_read_frames", "-of", "json", str(out)],
+                                       capture_output=True, text=True, check=True)
+                stream = json.loads(probe.stdout)["streams"][0]
+                self.assertEqual((stream["width"], stream["height"]), (1280, 720))
+                self.assertEqual(int(stream["nb_read_frames"]), 24)
 
 
 if __name__ == "__main__":
