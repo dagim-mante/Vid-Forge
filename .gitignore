@@ -12,6 +12,30 @@ build/
 outputs/
 runs.jsonl
 projects/
+!projects/
+projects/*
+!projects/theLastSeed/
+projects/theLastSeed/*
+!projects/theLastSeed/DESIGN.md
+!projects/theLastSeed/ARCHITECTURE.md
+!projects/theLastSeed/EXPERIMENTS.md
+!projects/theLastSeed/FAILURES.md
+!projects/theLastSeed/README.md
+!projects/theLastSeed/COSTS.md
+!projects/theLastSeed/REPORT.docx
+!projects/theLastSeed/input/
+projects/theLastSeed/input/*
+!projects/theLastSeed/input/brief.md
+!projects/theLastSeed/input/references/
+projects/theLastSeed/input/references/*
+!projects/theLastSeed/input/references/character_alemu.webp
+!projects/theLastSeed/input/references/character_girl.webp
+!projects/theLastSeed/input/references/character_villagers.webp
+!projects/theLastSeed/input/references/scene_tree_grown.webp
+!projects/theLastSeed/input/references/scene_village_drought.webp
+!projects/theLastSeed/production/
+projects/theLastSeed/production/*
+!projects/theLastSeed/production/storyboard.json
 
 # pulled kernel files
 pulled/

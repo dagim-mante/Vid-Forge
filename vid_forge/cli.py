@@ -9,6 +9,8 @@ Supported commands:
     video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15] [--force]
     assemble project=<project_name> [--transition cut|crossfade] [--transition-duration <seconds>]
              [--output <filename>] [--dry-run] [--force]
+    film project=<project_name> [--candidate-count <n>] [--steps <n>] [--accelerator <name>]
+         [--transition cut|crossfade] [--transition-duration <seconds>] [--dry-run]
     radio_cut project=<project_name>
     smoke_test [project=<project_name>]
 """
@@ -16,8 +18,10 @@ Supported commands:
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import re
+import shutil
 import sys
 from types import ModuleType
 from typing import Sequence
@@ -50,6 +54,9 @@ USAGE = """Usage:
   vid-forge assemble project=<project_name> [--transition cut|crossfade]
                       [--transition-duration <seconds>] [--output <filename>]
                       [--dry-run] [--force]
+  vid-forge film project=<project_name> [--candidate-count <n>] [--steps <n>]
+                   [--accelerator <name>] [--transition cut|crossfade]
+                   [--transition-duration <seconds>] [--dry-run]
   vid-forge smoke_test [project=<project_name>]
   vid-forge video project=<project_name> [--shot shot_01] [--provider wan22|hunyuan15]
               [--force] [--dry-run] [--validate-only] [--accelerator <name>]
@@ -73,6 +80,8 @@ Commands:
   video       Generate selected-keyframe clips, using local Ken Burns and Kaggle Wan i2v.
   assemble    Combine per-shot videos with timed narration, music, and burned-in subtitles.
               Writes 1280x720 and 720x1280 finals; supports hard cuts and crossfades.
+  film        Run storyboard (if missing), validation, keyframes, narration, video,
+              and final assembly in order; stops on the first failed stage.
   smoke_test  Run smoke tests (writes under projects/<project_name>/ if given)."""
 
 
@@ -438,6 +447,137 @@ def cmd_assemble(args: Sequence[str]) -> int:
     ))
 
 
+def cmd_film(args: Sequence[str]) -> int:
+    """Run every production stage in dependency order for one project."""
+    try:
+        options = _parse_options(
+            args,
+            value_keys=("project", "candidate-count", "steps", "accelerator", "transition", "transition-duration"),
+            flag_keys=("dry-run",),
+        )
+    except SystemExit:
+        print("Usage: vid-forge film project=<project_name> [--candidate-count <n>] [--steps <n>] "
+              "[--accelerator <name>] [--transition cut|crossfade] [--transition-duration <seconds>] [--dry-run]")
+        return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    project_dir, code = _resolve_project(options.get("project"))  # type: ignore[arg-type]
+    if project_dir is None:
+        return code
+    try:
+        candidate_count = int(str(options.get("candidate-count", "2")))
+        steps = int(str(options.get("steps", "20")))
+        transition_duration = float(str(options.get("transition-duration", "0.5")))
+    except ValueError as exc:
+        print(f"Error: invalid numeric film option: {exc}", file=sys.stderr)
+        return 2
+    if not 1 <= candidate_count <= 6:
+        print("Error: --candidate-count must be between 1 and 6.", file=sys.stderr)
+        return 2
+    if steps < 1:
+        print("Error: --steps must be a positive integer.", file=sys.stderr)
+        return 2
+    if transition_duration <= 0:
+        print("Error: --transition-duration must be a positive number of seconds.", file=sys.stderr)
+        return 2
+
+    transition = str(options.get("transition", "cut"))
+    if transition not in {"cut", "crossfade"}:
+        print("Error: --transition must be cut or crossfade.", file=sys.stderr)
+        return 2
+
+    brief = project_dir / "input" / "brief.md"
+    storyboard = project_dir / "production" / "storyboard.json"
+    if not brief.is_file() or not brief.read_text(encoding="utf-8").strip():
+        print(f"Error: {brief} is missing or empty; add the film brief before running the pipeline.", file=sys.stderr)
+        return 1
+
+    generate_storyboard = not storyboard.is_file()
+    accelerator = options.get("accelerator")
+    print(f"Film pipeline for {project_dir.name}:")
+    print(f"  1. {'generate storyboard from brief' if generate_storyboard else 'reuse checked-in storyboard'}")
+    print("  2. validate storyboard")
+    print(f"  3. generate keyframes ({candidate_count} candidate(s) per shot)")
+    print("  4. generate narration, subtitles, and radio-cut music bed")
+    print(f"  5. generate shot videos (Wan 2.2, {steps} steps, accelerator={accelerator or 'KAGGLE_ACCELERATOR/default'})")
+    print(f"  6. assemble 16:9 and 9:16 films (transition={transition})")
+    if options.get("dry-run", False):
+        print("Dry run only; no API calls, Kaggle jobs, or output files were created.")
+        print("Full runs need Gemini, Cloudflare Workers AI, Kaggle credentials, ffmpeg, and ffprobe.")
+        return 0
+
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT_DIR / ".env")
+    except ImportError:
+        pass
+    required_credentials = {
+        "GEMINI_API_KEY": bool(os.getenv("GEMINI_API_KEY", "").strip()),
+        "CLOUDFLARE_WORKERS_AI_ACCOUNT_ID": bool(
+            (os.getenv("CLOUDFLARE_WORKERS_AI_ACCOUNT_ID", "") or
+             os.getenv("CLOULDFLARE_WORKERS_AI_ACCOUNT_ID", "") or
+             os.getenv("CLOUDFLARE_ACCOUNT_ID", "")).strip()
+        ),
+        "CLOUDFLARE_WORKERS_AI_API_KEY": bool(
+            (os.getenv("CLOUDFLARE_WORKERS_AI_API_KEY", "") or
+             os.getenv("CLOULDFLARE_WORKERS_AI_API_KEY", "") or
+             os.getenv("CLOUDFLARE_API_TOKEN", "") or
+             os.getenv("CLOUDFLARE_API_KEY", "")).strip()
+        ),
+        "KAGGLE_API_TOKEN": bool(os.getenv("KAGGLE_API_TOKEN", "").strip()),
+        "KAGGLE_USERNAME": bool(os.getenv("KAGGLE_USERNAME", "").strip()),
+    }
+    missing_credentials = [name for name, present in required_credentials.items() if not present]
+    missing_tools = [name for name in ("ffmpeg", "ffprobe") if shutil.which(name) is None]
+    if missing_credentials or missing_tools:
+        if missing_credentials:
+            print("Error: set these values in the private .env file (copy .env.example): "
+                  + ", ".join(missing_credentials), file=sys.stderr)
+        if missing_tools:
+            print("Error: install and add these executables to PATH: " + ", ".join(missing_tools), file=sys.stderr)
+        return 1
+
+    if generate_storyboard:
+        print("\n[1/6] Generating storyboard")
+        result = cmd_storyboard([f"project={project_dir.name}"])
+        if result:
+            return result
+    else:
+        print("\n[1/6] Reusing the existing storyboard")
+
+    stages: list[tuple[str, list[str]]] = [
+        ("[2/6] Validating storyboard", ["validate", f"project={project_dir.name}"]),
+        ("[3/6] Generating keyframes", ["keyframes", f"project={project_dir.name}", "--candidate-count", str(candidate_count)]),
+        ("[4/6] Generating narration and radio cut", ["narration", f"project={project_dir.name}"]),
+    ]
+    video_args = ["video", f"project={project_dir.name}", "--provider", "wan22", "--steps", str(steps)]
+    if accelerator:
+        video_args.extend(["--accelerator", str(accelerator)])
+    stages.append(("[5/6] Generating shot videos", video_args))
+    assembly_args = ["assemble", f"project={project_dir.name}", "--transition", transition,
+                     "--transition-duration", str(transition_duration), "--force"]
+    stages.append(("[6/6] Assembling final films", assembly_args))
+
+    commands = {
+        "validate": cmd_validate,
+        "keyframes": cmd_keyframes,
+        "narration": cmd_narration,
+        "video": cmd_video,
+        "assemble": cmd_assemble,
+    }
+    for label, command in stages:
+        print(f"\n{label}", flush=True)
+        result = commands[command[0]](command[1:])
+        if result:
+            print(f"Film pipeline stopped at {label}; fix the reported issue and rerun. Cached work will be reused.",
+                  file=sys.stderr)
+            return result
+    print(f"\nFilm pipeline complete: {project_dir / 'production' / 'final.mp4'} and final_9x16.mp4")
+    return 0
+
+
 def cmd_smoke_test(args: Sequence[str]) -> int:
     """Handle `smoke_test [project=<project_name>]`."""
     try:
@@ -505,6 +645,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cmd_video(rest)
     if command == "assemble":
         return cmd_assemble(rest)
+    if command == "film":
+        return cmd_film(rest)
     if command == "smoke_test":
         return cmd_smoke_test(rest)
 

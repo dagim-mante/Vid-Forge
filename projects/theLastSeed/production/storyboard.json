@@ -1,0 +1,461 @@
+{
+  "schema_version": "1.0",
+  "meta": {
+    "title": "The Last Seed",
+    "audience": "Viewers who appreciate historical folktales and emotionally grounded stories about resilience.",
+    "intent": "After watching, the audience should feel the profound weight of patience and understand that small acts of hope shape the future.",
+    "narration_language": "am",
+    "subtitle_language": "en",
+    "voice_style": "calm, warm, unhurried, storyteller's cadence",
+    "fps": 24,
+    "aspect_ratios": [
+      "16:9",
+      "9:16"
+    ],
+    "generation": {
+      "model": "gemini-3.5-flash-lite",
+      "generated_at": "2026-11-26T07:57:39Z",
+      "brief_sha256": "06cdfb18cc43db402455034926287c68a726b39f5ba5fab917122e104a97c969"
+    }
+  },
+  "style": {
+    "prefix": "Grounded Ethiopian highland realism, 35mm film still, natural lighting, earthy color palette, cinematic composition",
+    "negative": "modern clothing, plastic containers, digital glow, text, watermark, blur, 3d render, cartoon",
+    "palette": [
+      "#c28549",
+      "#7d5a3f",
+      "#3b2f2f",
+      "#2e4a33",
+      "#e5d3b3"
+    ],
+    "characters": {
+      "alemu": "Alemu, a 70-year-old Ethiopian farmer with deeply weathered dark skin, etched lines around calm eyes, close-cropped grey hair and beard, wearing a worn white cotton shamma and dark earth-toned gabi.",
+      "villagers": "A group of sun-worn Ethiopian adults in dusty cotton garments, holding a clay water pot with skeptical expressions.",
+      "girl": "An 8-year-old Ethiopian girl with traditional braided hairstyle, wearing a light cotton dress with subtle border trim."
+    }
+  },
+  "references": [
+    {
+      "id": "character_alemu",
+      "kind": "character",
+      "path": "input/references/character_alemu.webp",
+      "description": "Alemu squatting in a dry field, holding a single seed in his calloused hand, wearing a traditional shamma and gabi.",
+      "sha256": "018b277bab299283fc25c69239e561e4a697ac4c76c309fb26e87288a1d4a158"
+    },
+    {
+      "id": "character_girl",
+      "kind": "character",
+      "path": "input/references/character_girl.webp",
+      "description": "A young girl with traditional braids crouching near a green sprout in dry earth, smiling gently.",
+      "sha256": "a285141ef8f27d9b8a7eefd64aa82baa2d4fabc35f1d844be3168d25485c202c"
+    },
+    {
+      "id": "character_villagers",
+      "kind": "character",
+      "path": "input/references/character_villagers.webp",
+      "description": "A group of four worried villagers interacting in a parched landscape, one holding an empty clay pot.",
+      "sha256": "eff4483383aff794b459838724574a53e66d06bd20e4b806f8147d450987645a"
+    },
+    {
+      "id": "scene_tree_grown",
+      "kind": "scene",
+      "path": "input/references/scene_tree_grown.webp",
+      "description": "A lush mature highland tree providing shade over villagers sitting with woven harvest baskets in emerald green fields.",
+      "sha256": "8d76d4f32ed35064cb7dae21816d580407b3a66b6282f7c75f91a860e8c1313b"
+    },
+    {
+      "id": "scene_village_drought",
+      "kind": "scene",
+      "path": "input/references/scene_village_drought.webp",
+      "description": "An aerial view of an isolated Ethiopian highland village surrounded by cracked ochre fields and empty dry paths.",
+      "sha256": "86858233969ddc919235b6cfa297394f146b4d6796f0a74db881ae229e2b5e45"
+    }
+  ],
+  "narration": [
+    {
+      "id": "line_01",
+      "text_en": "Long ago, in a village from which the sky had turned away, drought parched the land.",
+      "text": "ከብዙ ዘመን በፊት፣ ሰማይ ፊቱን ባዞረባት አንዲት መንደር፣ ድርቅ ምድሪቱን አደረቃት።"
+    },
+    {
+      "id": "line_02",
+      "text_en": "And hope dried up like the river.",
+      "text": "ተስፋም እንደ ወንዙ ደረቀ።"
+    },
+    {
+      "id": "line_03",
+      "text_en": "Yet the old farmer Alemu found one thing left inside his empty storehouse...",
+      "text": "አዛውንቱ ገበሬ አለሙ ግን፣ በባዶ ጎተራው ውስጥ አንድ ነገር አገኘ..."
+    },
+    {
+      "id": "line_04",
+      "text_en": "The very last seed.",
+      "text": "የመጨረሻዋን ዘር።"
+    },
+    {
+      "id": "line_05",
+      "text_en": "You are going to sow that single seed? The earth doesn't have a drop of water!",
+      "text": "ይህችን አንዲት ዘር ልትተክል ነው? መሬቱ እኮ ጠብታ ውሃ የለውም!"
+    },
+    {
+      "id": "line_06",
+      "text_en": "Yet if we do not sow it, what will grow tomorrow?",
+      "text": "ካልዘራናት ግን፣ ነገ ምን ይበቅላል?"
+    },
+    {
+      "id": "line_07",
+      "text_en": "Though all others had surrendered, he buried his faith in the soil.",
+      "text": "ሁሉም ተስፋ ቢቆርጥም፣ እሱ ግን እምነቱን በአፈር ውስጥ ቀበረ።"
+    },
+    {
+      "id": "line_08",
+      "text_en": "Days passed; nothing sprouted. Still, he did not stop waiting.",
+      "text": "ቀናት አለፉ፤ ምንም አልበቀለም። ነገር ግን እሱ መጠበቁን አላቆመም።"
+    },
+    {
+      "id": "line_09",
+      "text_en": "And after many days, a tiny life emerged from the parched earth.",
+      "text": "ከብዙ ቀናት በኋላም፣ ከደረቀው መሬት ትንሽ ሕይወት ብቅ አለች።"
+    },
+    {
+      "id": "line_10",
+      "text_en": "Years rolled by. The tiny shoot became a great tree, offering shade and fruit to the entire village.",
+      "text": "ዓመታት ነጎዱ። ትንሿ ቡቃያ ታላቅ ዛፍ ሆና፣ ጥላዋንና ፍሬዋን ለመንደሩ ሁሉ ሰጠች።"
+    },
+    {
+      "id": "line_11",
+      "text_en": "A great shelter begins with a single tiny seed.",
+      "text": "ታላቅ ጥላ የሚጀምረው፣ ከአንዲት ትንሽ ዘር ነው።"
+    }
+  ],
+  "shots": [
+    {
+      "id": "shot_01",
+      "purpose": "Establish the barren drought-stricken highland village from above.",
+      "duration_s": 7,
+      "framing": "wide",
+      "narration_ref": "line_01",
+      "characters": [],
+      "references": [
+        "scene_village_drought"
+      ],
+      "keyframe": {
+        "prompt": "Aerial view of an isolated Ethiopian highland village with circular thatched tukuls, surrounded by cracked ochre fields and dry earth paths under a pale dusty sky.",
+        "seed": 1001,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Slow aerial push-in toward the center of the dry village, gentle camera drift.",
+        "seed": 1002
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_02",
+      "purpose": "Show the extent of the drought with cracked earth and dry riverbed.",
+      "duration_s": 6,
+      "framing": "close",
+      "narration_ref": "line_02",
+      "characters": [],
+      "references": [],
+      "keyframe": {
+        "prompt": "Close-up of cracked riverbed stones and parched, dusty ground under harsh sunlight.",
+        "seed": 1003,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "kenburns",
+        "camera": "zoom_in"
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_03",
+      "purpose": "Introduce Alemu inside his dim, empty storehouse.",
+      "duration_s": 6,
+      "framing": "medium",
+      "narration_ref": "line_03",
+      "characters": [
+        "alemu"
+      ],
+      "references": [
+        "character_alemu"
+      ],
+      "keyframe": {
+        "prompt": "Alemu kneeling inside a dim mud-plastered room, checking empty woven baskets and clay storage vessels in a single shaft of morning light.",
+        "seed": 1004,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Subtle camera pan left, dust motes floating in the shaft of light.",
+        "seed": 1005
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_04",
+      "purpose": "Reveal the last seed in Alemu's weathered hand.",
+      "duration_s": 6,
+      "framing": "close",
+      "narration_ref": "line_04",
+      "characters": [
+        "alemu"
+      ],
+      "references": [
+        "character_alemu"
+      ],
+      "keyframe": {
+        "prompt": "Close-up shot of weathered hands opening a worn cloth scrap to reveal a single dark, textured seed resting on the palm.",
+        "seed": 1006,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Slow macro push-in on the seed in the palm, gentle hand micro-movement.",
+        "seed": 1007
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_05",
+      "purpose": "Show villagers expressing doubt about planting the seed in dry soil.",
+      "duration_s": 6,
+      "framing": "medium",
+      "narration_ref": "line_05",
+      "characters": [
+        "villagers"
+      ],
+      "references": [
+        "character_villagers"
+      ],
+      "keyframe": {
+        "prompt": "Four weathered Ethiopian villagers standing in a dry dusty field, one holding an empty clay pot, looking skeptically downward.",
+        "seed": 1008,
+        "candidates": 2,
+        "selected": 2
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Subtle camera drift right, villagers shifting weight with concerned expressions.",
+        "seed": 1009
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_06",
+      "purpose": "Capture Alemu's quiet, resolute response to the villagers.",
+      "duration_s": 6,
+      "framing": "close",
+      "narration_ref": "line_06",
+      "characters": [
+        "alemu"
+      ],
+      "references": [
+        "character_alemu"
+      ],
+      "keyframe": {
+        "prompt": "Alemu is stadning inside the hut house with the villagers. Close-up of Alemu's calm, observant face with etched lines, looking forward with steady unshakeable resolve. talking with th villagers.",
+        "seed": 1010,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "kenburns",
+        "camera": "zoom_in"
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_07",
+      "purpose": "Show Alemu planting the seed in the barren field.",
+      "duration_s": 6,
+      "framing": "wide",
+      "narration_ref": "line_07",
+      "characters": [
+        "alemu"
+      ],
+      "references": [
+        "character_alemu"
+      ],
+      "keyframe": {
+        "prompt": "Alemu kneeling alone in the center of a barren cracked field holding a small wooden digging tool, distant highland hills in background.",
+        "seed": 1011,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Static camera with dry wind blowing dust across the barren ground.",
+        "seed": 1012
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_08",
+      "purpose": "Depict the long waiting period across changing weather and time.",
+      "duration_s": 6,
+      "framing": "medium",
+      "narration_ref": "line_08",
+      "characters": [
+        "alemu"
+      ],
+      "references": [
+        "character_alemu"
+      ],
+      "keyframe": {
+        "prompt": "Show the land as still dry with no plants. Alemu tending a small mound of dry soil in the field under harsh afternoon sun, distant village tukuls visible.",
+        "seed": 1013,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Slow timelapse-style lighting shift from harsh noon glare to amber dusk.",
+        "seed": 1014
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_09",
+      "purpose": "Reveal the first tiny sprout emerging from the rain-darkened earth.",
+      "duration_s": 6,
+      "framing": "close",
+      "narration_ref": "line_09",
+      "characters": [],
+      "references": [],
+      "keyframe": {
+        "prompt": "Macro shot of a tiny vibrant green shoot emerging from rich, wet dark soil glistening with morning moisture.",
+        "seed": 1015,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Slow macro push-in toward the green sprout, gentle morning light shimmer.",
+        "seed": 1016
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_10",
+      "purpose": "Showcase the mature tree providing shade and abundant harvest to the community.",
+      "duration_s": 6,
+      "framing": "wide",
+      "narration_ref": "line_10",
+      "characters": [
+        "alemu",
+        "girl"
+      ],
+      "references": [
+        "scene_tree_grown",
+        "character_alemu",
+        "character_girl"
+      ],
+      "keyframe": {
+        "prompt": "A broad leafy mature highland tree casting cool shade over woven harvest baskets filled with fruit, surrounded by lush green terraced crops and smiling villagers.",
+        "seed": 1017,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Slow tilt-up from lush ground plants to the sprawling leafy canopy of the tree.",
+        "seed": 1018
+      },
+      "crop_x": 0.5
+    },
+    {
+      "id": "shot_11",
+      "purpose": "Conclude with the thematic moral beneath the sheltering tree.",
+      "duration_s": 6,
+      "framing": "medium",
+      "narration_ref": "line_11",
+      "characters": [
+        "alemu",
+        "girl"
+      ],
+      "references": [
+        "scene_tree_grown",
+        "character_alemu",
+        "character_girl"
+      ],
+      "keyframe": {
+        "prompt": "An aged Alemu sitting on a wooden stool beneath a leafy canopy, sharing harvested fruit with a young girl with braided hair in a peaceful community setting.",
+        "seed": 1019,
+        "candidates": 2,
+        "selected": 1
+      },
+      "motion": {
+        "type": "i2v",
+        "prompt": "Slow pull-back wide shot as golden sunlight filters gently through the leaves.",
+        "seed": 1020
+      },
+      "crop_x": 0.5
+    }
+  ],
+  "music": {
+    "instrumental": true,
+    "bpm": 72,
+    "cues": [
+      {
+        "id": "cue_01",
+        "start_s": 0,
+        "end_s": 13,
+        "mood": "desolate, solemn",
+        "intensity": 0.3,
+        "prompt": "traditional Ethiopian washint bamboo flute solo, dry ambient wind drone, slow tempo, melancholic mood"
+      },
+      {
+        "id": "cue_02",
+        "start_s": 13,
+        "end_s": 26,
+        "mood": "pensive, quiet",
+        "intensity": 0.4,
+        "prompt": "single warm plucked krar lyre notes, minimalist acoustic arrangement, reflective and grounded"
+      },
+      {
+        "id": "cue_03",
+        "start_s": 26,
+        "end_s": 42,
+        "mood": "skeptical, tense",
+        "intensity": 0.5,
+        "prompt": "low bowed masinko string drone, subtle rhythmic texture, serious conversational mood"
+      },
+      {
+        "id": "cue_04",
+        "start_s": 42,
+        "end_s": 55,
+        "mood": "determined, quiet hope",
+        "intensity": 0.4,
+        "prompt": "gentle krar and soft bamboo flute interplay, steady unhurried pace, hopeful undertones"
+      },
+      {
+        "id": "cue_05",
+        "start_s": 55,
+        "end_s": 67,
+        "mood": "patient, atmospheric",
+        "intensity": 0.6,
+        "prompt": "steady kebero drum heartbeat rhythm building with subtle flute harmonics and rain soundscape"
+      },
+      {
+        "id": "cue_06",
+        "start_s": 67,
+        "end_s": 72,
+        "mood": "warm, uplifting, triumphant",
+        "intensity": 0.8,
+        "prompt": "full traditional Ethiopian orchestral arrangement with rising krar, washint, and warm rhythmic percussion, peaceful and inspiring resolution"
+      }
+    ]
+  },
+  "end_card": {
+    "text": "This film was made with AI.",
+    "credits": "Director: Traditional Folktale Pipeline | Music: Ethio-Acoustic AI",
+    "duration_s": 5
+  }
+}
