@@ -61,7 +61,8 @@ Commands:
   storyboard  Generate projects/<project_name>/production/storyboard.json from input/brief.md.
               The output is validated against schema/storyboard.schema.json first.
               Refuses to overwrite an existing storyboard unless --force is given.
-  keyframes   Generate candidate images for every shot or one shot; candidates are never auto-selected.
+  keyframes   Generate candidate images for every shot or one shot; candidate 1 is selected by default
+              when successful, while any existing selection is preserved.
               --candidate-count updates keyframe.candidates in the storyboard for the selected scope (1 to 6).
   validate    Validate an existing storyboard.json (for example after hand edits).
   narration   Generate the narration with Gemini TTS (one audio file per line, cached),

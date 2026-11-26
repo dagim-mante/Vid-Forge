@@ -8,7 +8,8 @@ Flow for each shot:
     -> write / update production/keyframes.json with the generation record
     -> append one JSONL record per candidate to runs.jsonl
 
-A candidate is NEVER auto-selected; that decision belongs to a human.
+Candidate 1 is selected by default when it succeeds and no candidate is already selected.
+An existing selection is always preserved.
 Run with --shot shot_01 to generate a single shot; without it every shot runs.
 Run with --force to regenerate shots that already have all candidates on disk.
 """
@@ -330,6 +331,14 @@ def _shot_needs_generation(
     return any(not _candidate_path(shot_dir, c).is_file() for c in range(1, n + 1))
 
 
+def _needs_default_selection(project_dir: Path, shot: dict[str, Any]) -> bool:
+    """Select an already generated first candidate for legacy unselected shots."""
+    return (
+        shot["keyframe"].get("selected") is None
+        and _candidate_path(_shot_output_dir(project_dir, shot["id"]), 1).is_file()
+    )
+
+
 def _generate_shot(
     shot: dict[str, Any],
     storyboard: dict[str, Any],
@@ -512,7 +521,11 @@ def run_keyframes(
     if shot_id is not None:
         targets = scoped
     else:
-        targets = [s for s in all_shots if _shot_needs_generation(project_dir, s, force)]
+        targets = [
+            s for s in all_shots
+            if _shot_needs_generation(project_dir, s, force)
+            or _needs_default_selection(project_dir, s)
+        ]
 
     if not targets:
         print("All candidates already exist. Pass --force to regenerate.")
@@ -527,6 +540,11 @@ def run_keyframes(
             shot, storyboard, project_dir, account_id, api_key,
             runs_file, base_dir, model, force,
         )
+        if shot["keyframe"].get("selected") is None and any(
+            rec.candidate == 1 and rec.success for rec in records
+        ):
+            shot["keyframe"]["selected"] = 1
+            storyboard_changed = True
         # Update keyframes.json
         shot_entry = kf_data["shots"].setdefault(shot["id"], {})
         shot_entry["prompt"] = _build_prompt(shot, storyboard)
@@ -543,6 +561,8 @@ def run_keyframes(
         if any(not r.success for r in records):
             any_failed = True
 
+    if storyboard_changed:
+        _save_storyboard(sb_path, storyboard)
     _save_keyframes_json(kf_json_path, kf_data)
 
     # Summary

@@ -73,6 +73,45 @@ def _pip_install(*args: str) -> None:
         )
 
 
+def _pip_uninstall_optional(*packages: str) -> None:
+    """Remove unused optional backends that conflict with Wan's pinned stack."""
+    if not packages:
+        return
+    command = [sys.executable, "-m", "pip", "uninstall", "-y", *packages]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    if output:
+        print(output, file=sys.stderr, flush=True)
+    if result.returncode:
+        tail = output[-12000:] if output else "(pip produced no output)"
+        raise RuntimeError(f"Optional backend removal failed (exit {result.returncode}): {' '.join(command)}\n{tail}")
+
+
+def _prepare_ti2v_only_import() -> None:
+    """Avoid Wan's eager imports for unrelated tasks and their extra dependencies."""
+    package = REPO / "wan"
+    if not package.is_dir():
+        raise FileNotFoundError(f"Wan package directory was not found: {package}")
+    (package / "__init__.py").write_text(
+        '"""Vid-Forge entry point for the Wan TI2V worker."""\n'
+        "from . import configs\n"
+        "from .textimage2video import WanTI2V\n"
+        "\n"
+        '__all__ = ["WanTI2V", "configs"]\n',
+        encoding="utf-8",
+    )
+    model_file = package / "modules" / "model.py"
+    model_source = model_file.read_text(encoding="utf-8")
+    flash_import = "from .attention import flash_attention"
+    dispatch_import = "from .attention import attention as flash_attention"
+    if model_source.count(flash_import) != 1:
+        raise RuntimeError(
+            "Pinned Wan model.py did not contain the expected Flash Attention import; "
+            "refusing to start with an unknown attention backend."
+        )
+    model_file.write_text(model_source.replace(flash_import, dispatch_import, 1), encoding="utf-8")
+
+
 def _install_wan_requirements(requirements: Path) -> None:
     lines = requirements.read_text(encoding="utf-8").splitlines()
     regular: list[str] = []
@@ -91,8 +130,8 @@ def _install_wan_requirements(requirements: Path) -> None:
     if regular:
         _pip_install("-r", str(regular_file))
     if flash_attention:
-        # The pinned Wan attention module falls back to PyTorch SDPA when FA2/FA3
-        # is unavailable. Building flash-attn from source can exceed Kaggle's RAM.
+        # The worker switches Wan's TI2V model to its bundled SDPA dispatcher
+        # when FA2/FA3 is unavailable. Building flash-attn can exceed Kaggle RAM.
         print("Skipping optional flash_attn build; Wan will use PyTorch SDPA.", flush=True)
 
 
@@ -108,7 +147,16 @@ def main() -> int:
         revision = str(data.get("code_revision", "1ea34ff"))
         subprocess.run(["git", "-C", str(REPO), "checkout", revision], check=True)
         _install_wan_requirements(REPO / "requirements.txt")
+        # einops is imported by Wan's TI2V VAE but omitted from its top-level
+        # requirements.txt.
+        _pip_install("einops")
         _pip_install("huggingface_hub")
+        # Wan uses PyTorch only. Kaggle may provide Flax/JAX as optional image
+        # packages; newer JAX expects NumPy 2 APIs while Wan pins NumPy <2.
+        # Diffusers probes Flax when importing, so remove that unused backend
+        # before the probe can load its incompatible JAX stack.
+        _pip_uninstall_optional("flax")
+        _prepare_ti2v_only_import()
 
         # Wan's requirements can replace NumPy and related compiled packages.
         # Importing torch before pip runs leaves this process holding modules

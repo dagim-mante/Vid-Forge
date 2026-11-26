@@ -15,7 +15,7 @@ vid-forge assemble project=tibeb
 vid-forge assemble project=tibeb --transition crossfade --transition-duration 0.75
 ```
 
-`--candidate-count` updates `keyframe.candidates` in the storyboard for the selected scope (1–6), so generated candidates remain valid storyboard selections.
+`--candidate-count` updates `keyframe.candidates` in the storyboard for the selected scope (1–6). After generation, candidate 1 is selected automatically when it succeeded and the shot had no existing selection; manual selections are preserved.
 
 See [the video assembly guide](pipeline/video-assemble/README.md) for Kaggle configuration, model requirements, cache behavior, and recovery instructions.
 

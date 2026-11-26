@@ -18,9 +18,40 @@ sys.path.insert(0, str(STAGE))
 from providers import HunyuanVideo15Provider, VideoRequest, Wan22Provider  # noqa: E402
 from video_cache import VideoCache, fingerprint  # noqa: E402
 import video_assemble  # noqa: E402
+import video_worker  # noqa: E402
 
 
 class WorkerSetupTests(unittest.TestCase):
+    def test_worker_prepares_ti2v_entrypoint_and_sdpa_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "Wan2.2"
+            package = repo / "wan"
+            modules = package / "modules"
+            modules.mkdir(parents=True)
+            (package / "__init__.py").write_text(
+                "from .speech2video import WanS2V\nfrom .textimage2video import WanTI2V\n",
+                encoding="utf-8",
+            )
+            model_file = modules / "model.py"
+            model_file.write_text(
+                "from .attention import flash_attention\n",
+                encoding="utf-8",
+            )
+            with patch.object(video_worker, "REPO", repo):
+                video_worker._prepare_ti2v_only_import()
+            self.assertEqual(
+                (package / "__init__.py").read_text(encoding="utf-8"),
+                '"""Vid-Forge entry point for the Wan TI2V worker."""\n'
+                "from . import configs\n"
+                "from .textimage2video import WanTI2V\n"
+                "\n"
+                '__all__ = ["WanTI2V", "configs"]\n',
+            )
+            self.assertEqual(
+                model_file.read_text(encoding="utf-8"),
+                "from .attention import attention as flash_attention\n",
+            )
+
     def test_dependencies_install_before_torch_and_wan_imports(self) -> None:
         source = (STAGE / "video_worker.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -29,6 +60,17 @@ class WorkerSetupTests(unittest.TestCase):
             node.lineno for node in ast.walk(main)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
             and node.func.id == "_install_wan_requirements"
+        )
+        ti2v_import_prep_line = next(
+            node.lineno for node in ast.walk(main)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_prepare_ti2v_only_import"
+        )
+        einops_install_line = next(
+            node.lineno for node in ast.walk(main)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_pip_install" and node.args
+            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "einops"
         )
         torch_import_line = next(
             node.lineno for node in ast.walk(main)
@@ -44,6 +86,13 @@ class WorkerSetupTests(unittest.TestCase):
             and node.func.id == "snapshot_download"
         )
         self.assertLess(install_line, torch_import_line)
+        self.assertLess(install_line, einops_install_line)
+        self.assertLess(einops_install_line, torch_import_line)
+        self.assertLess(ti2v_import_prep_line, wan_import_line)
+        self.assertIn(
+            '"from .attention import attention as flash_attention"', source
+        )
+        self.assertIn('"from .attention import flash_attention"', source)
         self.assertLess(torch_import_line, wan_import_line)
         self.assertLess(wan_import_line, checkpoint_download_line)
 
