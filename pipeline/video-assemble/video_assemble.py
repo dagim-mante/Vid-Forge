@@ -33,9 +33,10 @@ from video_cache import FileLock, VideoCache, fingerprint, probe_video, sha256_f
 
 PIPELINE_VERSION = "1.0"
 MANIFEST_SCHEMA = 1
-DEFAULT_STEPS = 50
+DEFAULT_STEPS = 20
 DEFAULT_GUIDANCE = 5.0
 OUTPUT_WIDTH, OUTPUT_HEIGHT = 1280, 720
+KEN_BURNS_FILTER_VERSION = "ffmpeg-filter-v2-subtle-eased"
 STORYBOARD_PATH = Path("production") / "storyboard.json"
 SELECTION_MANIFEST = Path("production") / "keyframes.json"
 
@@ -201,14 +202,17 @@ def _render_kenburns(image: Path, output: Path, shot: dict[str, Any], fps: int) 
         raise ValueError(f"{shot['id']}: unsupported Ken Burns camera {camera!r}; use zoom_in, zoom_out, pan_left, or pan_right.")
     duration = float(shot["duration_s"])
     frames = max(1, round(duration * fps))
-    zoom = 1.16
+    # Keep the total camera travel restrained and ease it in/out so movement
+    # does not feel like a sudden digital camera adjustment.
+    zoom = 1.04
+    progress = f"(0.5-0.5*cos(PI*on/{max(frames-1,1)}))"
     if camera in {"zoom_in", "zoom_out"}:
         initial, final = (1.0, zoom) if camera == "zoom_in" else (zoom, 1.0)
-        z = f"{initial}+({final}-{initial})*on/{max(frames-1,1)}"
+        z = f"{initial}+({final}-{initial})*{progress}"
         x, y = "(iw-iw/zoom)/2", "(ih-ih/zoom)/2"
     else:
         z = str(zoom)
-        x = f"(iw-iw/zoom)*on/{max(frames-1,1)}" if camera == "pan_right" else f"(iw-iw/zoom)*(1-on/{max(frames-1,1)})"
+        x = f"(iw-iw/zoom)*{progress}" if camera == "pan_right" else f"(iw-iw/zoom)*(1-{progress})"
         y = "(ih-ih/zoom)/2"
     output.parent.mkdir(parents=True, exist_ok=True)
     filter_graph = (f"scale={OUTPUT_WIDTH}:{OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,"
@@ -320,7 +324,7 @@ def _resume_kaggle_batch(project_dir: Path, previous: dict[str, Any], timeout: i
 
 
 def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str, Any]]], accelerator: str,
-                  code_revision: str, timeout: int, manifest: dict[str, Any], on_status: Any = None) -> dict[str, Any]:
+                  worker_revision: str, timeout: int, manifest: dict[str, Any], on_status: Any = None) -> dict[str, Any]:
     """Upload one private dataset and submit one reusable private GPU kernel batch."""
     env = _kaggle_environment()
     print("Kaggle: checking API access.", flush=True)
@@ -347,11 +351,11 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
         shutil.copyfile(request.image, images_dir / image_name)
         jobs.append({"shot_id": request.shot_id, "image": f"images/{image_name}", "prompt": request.prompt,
                      "seed": request.seed, "negative_prompt": request.negative_prompt,
-                     "frame_count": request.frame_count, "steps": request.steps,
+                     "frame_count": request.frame_count, "steps": request.steps, "fps": request.fps,
                      "guidance": request.guidance, "sampling_solver": request.sampling_solver,
-                     "sampling_shift": request.sampling_shift, "wan_size": [1280, 704], "wan_max_area": 1280 * 704})
+                     "sampling_shift": request.sampling_shift, "width": 1280, "height": 704})
     write_json_atomic(jobs_dir / "jobs.json", {"model": requests[0][0].model, "model_revision": requests[0][0].model_revision,
-                                                "code_revision": code_revision, "jobs": jobs})
+                                                "worker_revision": worker_revision, "jobs": jobs})
     metadata = {"title": f"Vid Forge {project_slug} generation inputs", "id": f"{username}/{dataset_slug}",
                 "licenses": [{"name": "unknown"}]}
     write_json_atomic(bundle / "dataset-metadata.json", metadata)
@@ -467,7 +471,8 @@ def run_video(project_dir: Path, *, provider_name: str = "wan22", shot_id: str |
                 request = _request(project_dir, storyboard, shot, selected_image, Wan22Provider(), generation_steps, guidance)
                 # Include local motion and the actual requested frames in its content identity.
                 request = VideoRequest(**{**request.__dict__, "provider": "ffmpeg-kenburns", "model": "ffmpeg",
-                                          "model_revision": "ffmpeg-filter-v1", "implementation_revision": "ffmpeg-filter-v1",
+                                          "model_revision": KEN_BURNS_FILTER_VERSION,
+                                          "implementation_revision": KEN_BURNS_FILTER_VERSION,
                                           "preprocessing_version": "ffmpeg-scale-crop-v1",
                                           "motion_parameters": {"camera": motion["camera"]}})
             else:

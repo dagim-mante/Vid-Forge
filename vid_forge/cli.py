@@ -393,7 +393,7 @@ def cmd_video(args: Sequence[str]) -> int:
         validate_only=bool(options.get("validate-only", False)),
         accelerator=options.get("accelerator"),  # type: ignore[arg-type]
         keyframes_dir=Path(str(override)) if override else None,
-        generation_steps=int(str(options["steps"])) if options.get("steps") is not None else 50,
+        generation_steps=int(str(options["steps"])) if options.get("steps") is not None else 20,
         guidance=float(str(options["guidance"])) if options.get("guidance") is not None else 5.0,
         env_file=ROOT_DIR / ".env",
     ))

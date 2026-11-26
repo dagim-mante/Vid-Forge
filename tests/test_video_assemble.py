@@ -22,80 +22,78 @@ import video_worker  # noqa: E402
 
 
 class WorkerSetupTests(unittest.TestCase):
-    def test_worker_prepares_ti2v_entrypoint_and_sdpa_fallback(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            repo = Path(temporary) / "Wan2.2"
-            package = repo / "wan"
-            modules = package / "modules"
-            modules.mkdir(parents=True)
-            (package / "__init__.py").write_text(
-                "from .speech2video import WanS2V\nfrom .textimage2video import WanTI2V\n",
-                encoding="utf-8",
-            )
-            model_file = modules / "model.py"
-            model_file.write_text(
-                "from .attention import flash_attention\n",
-                encoding="utf-8",
-            )
-            with patch.object(video_worker, "REPO", repo):
-                video_worker._prepare_ti2v_only_import()
-            self.assertEqual(
-                (package / "__init__.py").read_text(encoding="utf-8"),
-                '"""Vid-Forge entry point for the Wan TI2V worker."""\n'
-                "from . import configs\n"
-                "from .textimage2video import WanTI2V\n"
-                "\n"
-                '__all__ = ["WanTI2V", "configs"]\n',
-            )
-            self.assertEqual(
-                model_file.read_text(encoding="utf-8"),
-                "from .attention import attention as flash_attention\n",
-            )
+    def test_pipeline_uses_sequential_cpu_offload_and_vae_tiling(self) -> None:
+        class FakeVae:
+            def __init__(self) -> None:
+                self.tiling_enabled = False
 
-    def test_dependencies_install_before_torch_and_wan_imports(self) -> None:
+            @classmethod
+            def from_pretrained(cls, *args: object, **kwargs: object) -> "FakeVae":
+                cls.load_args = (args, kwargs)
+                return cls()
+
+            def enable_tiling(self) -> None:
+                self.tiling_enabled = True
+
+        class FakePipeline:
+            def __init__(self) -> None:
+                self.vae = FakeVae()
+                self.offload_enabled = False
+
+            @classmethod
+            def from_pretrained(cls, *args: object, **kwargs: object) -> "FakePipeline":
+                cls.load_args = (args, kwargs)
+                return cls()
+
+            def enable_sequential_cpu_offload(self) -> None:
+                self.offload_enabled = True
+
+        import types
+        diffusers = types.ModuleType("diffusers")
+        diffusers.AutoencoderKLWan = FakeVae
+        diffusers.WanImageToVideoPipeline = FakePipeline
+        torch = type("Torch", (), {"float32": "fp32", "float16": "fp16"})
+        with patch.dict(sys.modules, {"diffusers": diffusers}):
+            pipeline = video_worker._load_pipeline("model/id", "revision", Path("cache"), torch)
+        self.assertTrue(pipeline.offload_enabled)
+        self.assertTrue(pipeline.vae.tiling_enabled)
+        self.assertEqual(FakePipeline.load_args[1]["torch_dtype"], "fp16")
+        self.assertEqual(FakeVae.load_args[1]["torch_dtype"], "fp32")
+
+    def test_setup_flags_and_dependencies_precede_torch_import(self) -> None:
         source = (STAGE / "video_worker.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
         install_line = next(
             node.lineno for node in ast.walk(main)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "_install_wan_requirements"
-        )
-        ti2v_import_prep_line = next(
-            node.lineno for node in ast.walk(main)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "_prepare_ti2v_only_import"
-        )
-        einops_install_line = next(
-            node.lineno for node in ast.walk(main)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "_pip_install" and node.args
-            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "einops"
+            and node.func.id == "_install_diffusers_requirements"
         )
         torch_import_line = next(
             node.lineno for node in ast.walk(main)
             if isinstance(node, ast.Import) and any(alias.name == "torch" for alias in node.names)
         )
-        wan_import_line = next(
-            node.lineno for node in ast.walk(main)
-            if isinstance(node, ast.Import) and any(alias.name == "wan" for alias in node.names)
-        )
-        checkpoint_download_line = next(
-            node.lineno for node in ast.walk(main)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            and node.func.id == "snapshot_download"
-        )
         self.assertLess(install_line, torch_import_line)
-        self.assertLess(install_line, einops_install_line)
-        self.assertLess(einops_install_line, torch_import_line)
-        self.assertLess(ti2v_import_prep_line, wan_import_line)
-        self.assertIn(
-            '"from .attention import attention as flash_attention"', source
-        )
-        self.assertIn('"from .attention import flash_attention"', source)
-        self.assertLess(torch_import_line, wan_import_line)
-        self.assertLess(wan_import_line, checkpoint_download_line)
-
+        for flag in ("CUDA_VISIBLE_DEVICES", "USE_TF", "USE_FLAX"):
+            flag_line = next(
+                node.lineno for node in ast.walk(main)
+                if isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Attribute)
+                    and isinstance(target.value.value, ast.Name)
+                    and target.value.value.id == "os"
+                    and target.value.attr == "environ"
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == flag
+                    for target in node.targets
+                )
+            )
+            self.assertLess(flag_line, torch_import_line)
+        self.assertLess(source.index('os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF"'), source.index("import torch"))
+        self.assertIn("enable_sequential_cpu_offload", source)
+        self.assertIn("enable_tiling", source)
+        self.assertIn('generator=torch.Generator(device="cpu")', source)
 
 def make_request(**changes: object) -> VideoRequest:
     values: dict[str, object] = {
@@ -103,8 +101,9 @@ def make_request(**changes: object) -> VideoRequest:
         "negative_prompt": "blur", "seed": 9, "duration_s": 5.0, "fps": 24,
         "width": 1280, "height": 720, "frame_count": 121, "steps": 30,
         "guidance": 5.0, "sampling_solver": "unipc", "sampling_shift": 5.0,
-        "provider": "wan22", "model": "Wan-AI/Wan2.2-TI2V-5B",
-        "model_revision": "pinned", "implementation_revision": "source-pinned", "image_sha256": "ab" * 32,
+        "provider": "wan22", "model": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+        "model_revision": Wan22Provider.model_revision,
+        "implementation_revision": Wan22Provider.implementation_revision, "image_sha256": "ab" * 32,
     }
     values.update(changes)
     return VideoRequest(**values)  # type: ignore[arg-type]
@@ -313,6 +312,17 @@ class KaggleTests(unittest.TestCase):
         self.assertIn("test-user/vid-forge-sample-video-worker/7", output)
         self.assertTrue(any(call[:2] == ["datasets", "create"] for call in self.calls))
         self.assertTrue(any(call[:2] == ["kernels", "push"] and "NvidiaTeslaA100" in call for call in self.calls))
+
+    def test_job_bundle_matches_diffusers_worker_inputs(self) -> None:
+        self._run_batch()
+        jobs_file = self.root / "sample" / "cache" / "video-jobs" / "dataset" / "jobs" / "jobs.json"
+        bundle = json.loads(jobs_file.read_text(encoding="utf-8"))
+        self.assertEqual(bundle["model"], Wan22Provider.model_id)
+        self.assertEqual(bundle["model_revision"], Wan22Provider.model_revision)
+        self.assertEqual(bundle["jobs"][0]["width"], 1280)
+        self.assertEqual(bundle["jobs"][0]["height"], 704)
+        self.assertEqual(bundle["jobs"][0]["fps"], self.request.fps)
+        self.assertEqual(bundle["jobs"][0]["frame_count"], self.request.frame_count)
 
     def test_existing_dataset_is_versioned(self) -> None:
         self._run_batch(existing=True)

@@ -69,14 +69,17 @@ class VideoProvider:
 
 class Wan22Provider(VideoProvider):
     provider_id = "wan22"
-    model_id = "Wan-AI/Wan2.2-TI2V-5B"
-    model_revision = "921dbaf3f1674a56f47e83fb80a34bac8a8f203e"
-    implementation_revision = "1ea34ff"
-    supported_parameters = ("image", "prompt", "n_prompt", "seed", "size", "frame_num", "sample_solver", "sample_steps", "sample_shift", "sample_guide_scale")
+    model_id = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+    model_revision = "4c6ca6c2ded5c79550a3ca25555efc561112891a"
+    implementation_revision = "diffusers-sequential-offload-v1"
+    supported_parameters = (
+        "image", "prompt", "negative_prompt", "generator", "height", "width",
+        "num_frames", "num_inference_steps", "guidance_scale",
+    )
     required_input_format = "RGB image file"
     resolution_constraints = "Official TI2V sizes; 1280x704 for landscape 720p, preserving input aspect ratio"
     frame_constraints = "4n+1 frames"
-    vram_requirements = "Official repo documents 24 GB for TI2V-5B at 720p; Kaggle availability must be validated per accelerator"
+    vram_requirements = "Uses Diffusers sequential CPU offload and VAE tiling to reduce GPU memory; Kaggle T4 runs still depend on available system RAM"
     supports_negative_prompt = True
     implemented = True
 

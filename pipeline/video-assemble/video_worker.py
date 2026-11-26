@@ -1,6 +1,7 @@
-"""Kaggle worker: runs official Wan 2.2 TI2V-5B code over a submitted batch."""
+"""Kaggle worker: generate Vid-Forge shots with Diffusers Wan TI2V and CPU offload."""
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import os
@@ -8,13 +9,13 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+import time
 import traceback
 import zipfile
 
 INPUT = Path("/kaggle/input")
 WORK = Path("/kaggle/working")
 SCRATCH = Path("/kaggle/tmp")
-REPO = Path("/kaggle/working/Wan2.2")
 
 
 def _safe_extract_zip(archive: Path, destination: Path) -> None:
@@ -73,66 +74,81 @@ def _pip_install(*args: str) -> None:
         )
 
 
-def _pip_uninstall_optional(*packages: str) -> None:
-    """Remove unused optional backends that conflict with Wan's pinned stack."""
-    if not packages:
-        return
-    command = [sys.executable, "-m", "pip", "uninstall", "-y", *packages]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
-    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
-    if output:
-        print(output, file=sys.stderr, flush=True)
-    if result.returncode:
-        tail = output[-12000:] if output else "(pip produced no output)"
-        raise RuntimeError(f"Optional backend removal failed (exit {result.returncode}): {' '.join(command)}\n{tail}")
-
-
-def _prepare_ti2v_only_import() -> None:
-    """Avoid Wan's eager imports for unrelated tasks and their extra dependencies."""
-    package = REPO / "wan"
-    if not package.is_dir():
-        raise FileNotFoundError(f"Wan package directory was not found: {package}")
-    (package / "__init__.py").write_text(
-        '"""Vid-Forge entry point for the Wan TI2V worker."""\n'
-        "from . import configs\n"
-        "from .textimage2video import WanTI2V\n"
-        "\n"
-        '__all__ = ["WanTI2V", "configs"]\n',
-        encoding="utf-8",
+def _install_diffusers_requirements() -> None:
+    _pip_install(
+        "diffusers>=0.35.0",
+        "transformers>=4.51.3,<5",
+        "accelerate>=1.1.1",
+        "ftfy",
+        "imageio[ffmpeg]",
+        "imageio-ffmpeg",
+        "sentencepiece",
     )
-    model_file = package / "modules" / "model.py"
-    model_source = model_file.read_text(encoding="utf-8")
-    flash_import = "from .attention import flash_attention"
-    dispatch_import = "from .attention import attention as flash_attention"
-    if model_source.count(flash_import) != 1:
-        raise RuntimeError(
-            "Pinned Wan model.py did not contain the expected Flash Attention import; "
-            "refusing to start with an unknown attention backend."
-        )
-    model_file.write_text(model_source.replace(flash_import, dispatch_import, 1), encoding="utf-8")
 
 
-def _install_wan_requirements(requirements: Path) -> None:
-    lines = requirements.read_text(encoding="utf-8").splitlines()
-    regular: list[str] = []
-    flash_attention: list[str] = []
-    for line in lines:
-        requirement = line.strip()
-        if not requirement or requirement.startswith("#"):
-            continue
-        if requirement.casefold().split("[", 1)[0].split("=", 1)[0].strip() in {"flash_attn", "flash-attn"}:
-            flash_attention.append(line)
-        else:
-            regular.append(line)
+def _load_pipeline(model_id: str, revision: str, cache_dir: Path, torch: object) -> object:
+    """Load the official Diffusers model with low GPU residency for T4 GPUs."""
+    from diffusers import AutoencoderKLWan, WanImageToVideoPipeline
 
-    regular_file = WORK / "wan-requirements-without-flash-attn.txt"
-    regular_file.write_text("\n".join(regular) + "\n", encoding="utf-8")
-    if regular:
-        _pip_install("-r", str(regular_file))
-    if flash_attention:
-        # The worker switches Wan's TI2V model to its bundled SDPA dispatcher
-        # when FA2/FA3 is unavailable. Building flash-attn can exceed Kaggle RAM.
-        print("Skipping optional flash_attn build; Wan will use PyTorch SDPA.", flush=True)
+    vae = AutoencoderKLWan.from_pretrained(
+        model_id,
+        subfolder="vae",
+        revision=revision,
+        cache_dir=str(cache_dir),
+        torch_dtype=torch.float32,
+    )
+    pipeline = WanImageToVideoPipeline.from_pretrained(
+        model_id,
+        revision=revision,
+        cache_dir=str(cache_dir),
+        vae=vae,
+        torch_dtype=torch.float16,
+    )
+    # Do not call pipeline.to("cuda") first: sequential offload keeps only the
+    # component/layers needed for the current operation on the GPU.
+    pipeline.enable_sequential_cpu_offload()
+    pipeline.vae.enable_tiling()
+    return pipeline
+
+
+def _run_job(
+    job: dict[str, object], bundle: Path, output: Path, pipeline: object,
+    torch: object, Image: object, ImageOps: object, export_to_video: object,
+    gpu: dict[str, object], model_id: str, load_s: float,
+) -> dict[str, object]:
+    shot_id = str(job["shot_id"])
+    width, height = int(job["width"]), int(job["height"])
+    with Image.open(bundle.parent / str(job["image"])) as source:
+        image = ImageOps.fit(source.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.unlink(missing_ok=True)
+    started = time.time()
+    frames = pipeline(
+        image=image,
+        prompt=str(job["prompt"]),
+        negative_prompt=str(job.get("negative_prompt", "")),
+        height=height,
+        width=width,
+        num_frames=int(job["frame_count"]),
+        num_inference_steps=int(job["steps"]),
+        guidance_scale=float(job["guidance"]),
+        generator=torch.Generator(device="cpu").manual_seed(int(job["seed"])),
+        output_type="pil",
+    ).frames[0]
+    export_to_video(frames, str(output), fps=int(job.get("fps", 24)))
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError(f"Diffusers did not write a video for {shot_id}.")
+    return {
+        "shot_id": shot_id,
+        "status": "completed",
+        "output": output.name,
+        "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+        "gpu": gpu,
+        "latency_s": round(time.time() - started, 1),
+        "model_load_s": round(load_s, 1),
+        "model": model_id,
+    }
 
 
 def main() -> int:
@@ -142,94 +158,79 @@ def main() -> int:
         jobs = data["jobs"]
         WORK.mkdir(parents=True, exist_ok=True)
         SCRATCH.mkdir(parents=True, exist_ok=True)
-        if not REPO.is_dir():
-            subprocess.run(["git", "clone", "https://github.com/Wan-Video/Wan2.2.git", str(REPO)], check=True)
-        revision = str(data.get("code_revision", "1ea34ff"))
-        subprocess.run(["git", "-C", str(REPO), "checkout", revision], check=True)
-        _install_wan_requirements(REPO / "requirements.txt")
-        # einops is imported by Wan's TI2V VAE but omitted from its top-level
-        # requirements.txt.
-        _pip_install("einops")
-        _pip_install("huggingface_hub")
-        # Wan uses PyTorch only. Kaggle may provide Flax/JAX as optional image
-        # packages; newer JAX expects NumPy 2 APIs while Wan pins NumPy <2.
-        # Diffusers probes Flax when importing, so remove that unused backend
-        # before the probe can load its incompatible JAX stack.
-        _pip_uninstall_optional("flax")
-        _prepare_ti2v_only_import()
 
-        # Wan's requirements can replace NumPy and related compiled packages.
-        # Importing torch before pip runs leaves this process holding modules
-        # from the previous NumPy installation, which can cause ABI errors
-        # later when diffusers lazily imports numpy.random.
-        import numpy
+        # This worker intentionally uses one GPU. Set allocator/backend flags
+        # before importing torch, Transformers, or Diffusers.
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+        os.environ["USE_TF"] = "0"
+        os.environ["USE_FLAX"] = "0"
+        _install_diffusers_requirements()
+
         import torch
-        from PIL import Image
+        from PIL import Image, ImageOps
+        from diffusers.utils import export_to_video
 
-        if int(numpy.__version__.split(".", 1)[0]) >= 2:
-            raise RuntimeError(
-                f"Wan's pinned requirements expect NumPy <2, but NumPy {numpy.__version__} is active. "
-                "Check the dependency installation output before retrying the Kaggle job."
-            )
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is unavailable; check that the Kaggle kernel has a GPU accelerator.")
         props = torch.cuda.get_device_properties(0)
-        gpu = {"name": props.name, "total_memory_bytes": int(props.total_memory),
-               "free_memory_bytes": int(torch.cuda.mem_get_info(0)[0])}
-        print("Runtime:", json.dumps({"python": sys.version.split()[0], "numpy": numpy.__version__,
-                                     "torch": torch.__version__}), flush=True)
+        gpu = {
+            "name": props.name,
+            "total_memory_bytes": int(props.total_memory),
+            "free_memory_bytes": int(torch.cuda.mem_get_info(0)[0]),
+        }
+        print("Runtime:", json.dumps({
+            "python": sys.version.split()[0],
+            "torch": torch.__version__,
+            "diffusers": __import__("diffusers").__version__,
+            "offload": "sequential_cpu",
+        }), flush=True)
         print("GPU:", json.dumps(gpu), flush=True)
 
-        # Import the full inference stack before fetching multi-gigabyte weights
-        # so dependency/import problems fail quickly and are reported clearly.
-        sys.path.insert(0, str(REPO))
-        import wan
-        from wan.configs import WAN_CONFIGS
-        from wan.utils.utils import save_video
-
-        from huggingface_hub import snapshot_download
-        checkpoint_dir = SCRATCH / "Wan2.2-TI2V-5B"
-        print(f"Downloading model checkpoint to scratch storage: {checkpoint_dir}", flush=True)
-        checkpoint = snapshot_download(
-            repo_id=data.get("model", "Wan-AI/Wan2.2-TI2V-5B"),
-            revision=data.get("model_revision") or None,
-            local_dir=str(checkpoint_dir),
-        )
-        config = WAN_CONFIGS["ti2v-5B"]
-        # Official Wan code uses T5 on CPU and low-memory model conversion for a single GPU.
-        pipeline = wan.WanTI2V(config=config, checkpoint_dir=checkpoint, device_id=0, rank=0,
-                               t5_fsdp=False, dit_fsdp=False, use_sp=False, t5_cpu=True,
-                               convert_model_dtype=True)
         results: list[dict[str, object]] = []
-        for job in jobs:
-            shot_id = str(job["shot_id"])
-            output = WORK / "results" / f"{shot_id}.mp4"
-            output.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                image = Image.open(bundle.parent / job["image"]).convert("RGB")
-                video = pipeline.generate(
-                    str(job["prompt"]), img=image, size=tuple(job["wan_size"]),
-                    max_area=int(job["wan_max_area"]), frame_num=int(job["frame_count"]),
-                    shift=float(job["sampling_shift"]), sample_solver=str(job["sampling_solver"]), sampling_steps=int(job["steps"]),
-                    guide_scale=float(job["guidance"]), n_prompt=str(job["negative_prompt"]),
-                    seed=int(job["seed"]), offload_model=True,
-                )
-                save_video(tensor=video[None], save_file=str(output), fps=config.sample_fps,
-                           nrow=1, normalize=True, value_range=(-1, 1))
-                del video
-                digest = hashlib.sha256(output.read_bytes()).hexdigest()
-                results.append({"shot_id": shot_id, "status": "completed", "output": output.name,
-                                "sha256": digest, "gpu": gpu})
-            except Exception as exc:  # preserve earlier completed outputs
-                results.append({"shot_id": shot_id, "status": "failed", "error": str(exc)[:1000],
-                                "traceback": traceback.format_exc()[-3000:], "gpu": gpu})
-                print(f"Generation failed for {shot_id}: {exc}", file=sys.stderr)
-        (WORK / "results" / "results.json").write_text(json.dumps({"jobs": results, "gpu": gpu}, indent=2), encoding="utf-8")
-        # A partial shot failure must still publish successful MP4s and results.json for recovery.
+        if jobs:
+            model_id = str(data["model"])
+            revision = str(data["model_revision"])
+            cache_dir = SCRATCH / "huggingface-cache"
+            print(f"Loading {model_id}@{revision} with sequential CPU offload.", flush=True)
+            load_started = time.time()
+            pipeline = _load_pipeline(model_id, revision, cache_dir, torch)
+            load_s = time.time() - load_started
+            print(f"Pipeline ready in {load_s:.0f}s; VAE tiling enabled.", flush=True)
+            for job in jobs:
+                shot_id = str(job["shot_id"])
+                output = WORK / "results" / f"{shot_id}.mp4"
+                try:
+                    result = _run_job(job, bundle, output, pipeline, torch, Image, ImageOps,
+                                      export_to_video, gpu, model_id, load_s)
+                    print(f"{shot_id}: completed in {result['latency_s']}s", flush=True)
+                except Exception as exc:  # preserve successful earlier outputs
+                    result = {
+                        "shot_id": shot_id,
+                        "status": "failed",
+                        "error": str(exc)[:1000],
+                        "traceback": traceback.format_exc()[-3000:],
+                        "gpu": gpu,
+                    }
+                    print(f"Generation failed for {shot_id}: {exc}", file=sys.stderr, flush=True)
+                results.append(result)
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        results_dir = WORK / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "results.json").write_text(
+            json.dumps({"jobs": results, "gpu": gpu}, indent=2), encoding="utf-8"
+        )
+        # Per-shot failures stay in results.json so completed shots can be recovered.
         return 0
     except Exception as exc:
-        (WORK / "worker_error.json").write_text(json.dumps({"status": "failed", "error": str(exc),
-                                "traceback": traceback.format_exc()[-4000:]}, indent=2), encoding="utf-8")
+        WORK.mkdir(parents=True, exist_ok=True)
+        (WORK / "worker_error.json").write_text(json.dumps({
+            "status": "failed",
+            "error": str(exc),
+            "traceback": traceback.format_exc()[-4000:],
+        }, indent=2), encoding="utf-8")
         raise
 
 
