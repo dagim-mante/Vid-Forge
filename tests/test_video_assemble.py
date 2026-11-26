@@ -45,7 +45,7 @@ class WorkerSetupTests(unittest.TestCase):
                 cls.load_args = (args, kwargs)
                 return cls()
 
-            def enable_sequential_cpu_offload(self) -> None:
+            def enable_model_cpu_offload(self) -> None:
                 self.offload_enabled = True
 
         import types
@@ -91,7 +91,7 @@ class WorkerSetupTests(unittest.TestCase):
             )
             self.assertLess(flag_line, torch_import_line)
         self.assertLess(source.index('os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF"'), source.index("import torch"))
-        self.assertIn("enable_sequential_cpu_offload", source)
+        self.assertIn("enable_model_cpu_offload", source)
         self.assertIn("enable_tiling", source)
         self.assertIn('generator=torch.Generator(device="cpu")', source)
 
@@ -319,8 +319,8 @@ class KaggleTests(unittest.TestCase):
         bundle = json.loads(jobs_file.read_text(encoding="utf-8"))
         self.assertEqual(bundle["model"], Wan22Provider.model_id)
         self.assertEqual(bundle["model_revision"], Wan22Provider.model_revision)
-        self.assertEqual(bundle["jobs"][0]["width"], 1280)
-        self.assertEqual(bundle["jobs"][0]["height"], 704)
+        self.assertEqual(bundle["jobs"][0]["width"], 832)
+        self.assertEqual(bundle["jobs"][0]["height"], 480)
         self.assertEqual(bundle["jobs"][0]["fps"], self.request.fps)
         self.assertEqual(bundle["jobs"][0]["frame_count"], self.request.frame_count)
 

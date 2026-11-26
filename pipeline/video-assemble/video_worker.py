@@ -104,9 +104,9 @@ def _load_pipeline(model_id: str, revision: str, cache_dir: Path, torch: object)
         vae=vae,
         torch_dtype=torch.float16,
     )
-    # Do not call pipeline.to("cuda") first: sequential offload keeps only the
-    # component/layers needed for the current operation on the GPU.
-    pipeline.enable_sequential_cpu_offload()
+    # Do not call pipeline.to("cuda") first: model CPU offload keeps one whole
+    # component (e.g. transformer) on GPU during its pass, avoiding per-layer PCIe thrashing.
+    pipeline.enable_model_cpu_offload()
     pipeline.vae.enable_tiling()
     return pipeline
 
@@ -183,7 +183,7 @@ def main() -> int:
             "python": sys.version.split()[0],
             "torch": torch.__version__,
             "diffusers": __import__("diffusers").__version__,
-            "offload": "sequential_cpu",
+            "offload": "model_cpu",
         }), flush=True)
         print("GPU:", json.dumps(gpu), flush=True)
 
@@ -192,7 +192,7 @@ def main() -> int:
             model_id = str(data["model"])
             revision = str(data["model_revision"])
             cache_dir = SCRATCH / "huggingface-cache"
-            print(f"Loading {model_id}@{revision} with sequential CPU offload.", flush=True)
+            print(f"Loading {model_id}@{revision} with model CPU offload.", flush=True)
             load_started = time.time()
             pipeline = _load_pipeline(model_id, revision, cache_dir, torch)
             load_s = time.time() - load_started

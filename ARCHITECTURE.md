@@ -291,15 +291,6 @@ Vid-Forge currently hosts two active projects under `projects/`:
   - Video Generation: `shot_02` and `shot_06` generated locally via Ken Burns. The 9 Wan shots are pending remote GPU execution.
   - Preview Assembly: Assembly completed with black placeholders for unrendered shots, verifying end-to-end audio, timing, and subtitle layout.
 
-### 2. `initiation` (Pilot & Benchmark Project)
-
-- **Concept**: *Where We Come From* (`የምንመጣበት መንገድ`) — A poetic, cinematic documentary short on family roots, Ethiopian heritage, and personal ambition.
-- **Technical Profile**:
-  - **Timeline**: 13 shots totaling ~85 seconds.
-  - **Setting**: Addis Ababa urban textures, domestic family interiors, and contrasting highland landscapes.
-  - **Tone**: Warm Ethiopian realism, golden-hour palettes, natural light.
-  - **Role**: Served as the initial proving ground for the storyboard schema, Gemini TTS synthesis, and Kaggle worker deployment bundles.
-
 ---
 
 ## 6. CLI Command Reference & Workflows

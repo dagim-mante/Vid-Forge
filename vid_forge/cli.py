@@ -402,7 +402,7 @@ def cmd_video(args: Sequence[str]) -> int:
         validate_only=bool(options.get("validate-only", False)),
         accelerator=options.get("accelerator"),  # type: ignore[arg-type]
         keyframes_dir=Path(str(override)) if override else None,
-        generation_steps=int(str(options["steps"])) if options.get("steps") is not None else 20,
+        generation_steps=int(str(options["steps"])) if options.get("steps") is not None else 12,
         guidance=float(str(options["guidance"])) if options.get("guidance") is not None else 5.0,
         env_file=ROOT_DIR / ".env",
     ))
@@ -468,7 +468,7 @@ def cmd_film(args: Sequence[str]) -> int:
         return code
     try:
         candidate_count = int(str(options.get("candidate-count", "2")))
-        steps = int(str(options.get("steps", "20")))
+        steps = int(str(options.get("steps", "12")))
         transition_duration = float(str(options.get("transition-duration", "0.5")))
     except ValueError as exc:
         print(f"Error: invalid numeric film option: {exc}", file=sys.stderr)

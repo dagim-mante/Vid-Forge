@@ -146,9 +146,8 @@
         "selected": 1
       },
       "motion": {
-        "type": "i2v",
-        "prompt": "Slow aerial push-in toward the center of the dry village, gentle camera drift.",
-        "seed": 1002
+        "type": "kenburns",
+        "camera": "zoom_in"
       },
       "crop_x": 0.5
     },
@@ -315,9 +314,8 @@
         "selected": 1
       },
       "motion": {
-        "type": "i2v",
-        "prompt": "Slow timelapse-style lighting shift from harsh noon glare to amber dusk.",
-        "seed": 1014
+        "type": "kenburns",
+        "camera": "pan_right"
       },
       "crop_x": 0.5
     },
@@ -336,9 +334,8 @@
         "selected": 1
       },
       "motion": {
-        "type": "i2v",
-        "prompt": "Slow macro push-in toward the green sprout, gentle morning light shimmer.",
-        "seed": 1016
+        "type": "kenburns",
+        "camera": "zoom_in"
       },
       "crop_x": 0.5
     },
@@ -364,9 +361,8 @@
         "selected": 1
       },
       "motion": {
-        "type": "i2v",
-        "prompt": "Slow tilt-up from lush ground plants to the sprawling leafy canopy of the tree.",
-        "seed": 1018
+        "type": "kenburns",
+        "camera": "zoom_out"
       },
       "crop_x": 0.5
     },

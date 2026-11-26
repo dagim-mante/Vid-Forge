@@ -33,7 +33,7 @@ from video_cache import FileLock, VideoCache, fingerprint, probe_video, sha256_f
 
 PIPELINE_VERSION = "1.0"
 MANIFEST_SCHEMA = 1
-DEFAULT_STEPS = 20
+DEFAULT_STEPS = 12
 DEFAULT_GUIDANCE = 5.0
 OUTPUT_WIDTH, OUTPUT_HEIGHT = 1280, 720
 KEN_BURNS_FILTER_VERSION = "ffmpeg-filter-v2-subtle-eased"
@@ -353,7 +353,7 @@ def _kaggle_batch(project_dir: Path, requests: list[tuple[VideoRequest, dict[str
                      "seed": request.seed, "negative_prompt": request.negative_prompt,
                      "frame_count": request.frame_count, "steps": request.steps, "fps": request.fps,
                      "guidance": request.guidance, "sampling_solver": request.sampling_solver,
-                     "sampling_shift": request.sampling_shift, "width": 1280, "height": 704})
+                     "sampling_shift": request.sampling_shift, "width": 832, "height": 480})
     write_json_atomic(jobs_dir / "jobs.json", {"model": requests[0][0].model, "model_revision": requests[0][0].model_revision,
                                                 "worker_revision": worker_revision, "jobs": jobs})
     metadata = {"title": f"Vid Forge {project_slug} generation inputs", "id": f"{username}/{dataset_slug}",
